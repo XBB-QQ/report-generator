@@ -3,24 +3,85 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v6.9
+# Report Generator Skill - v7.0
+
+## 硬性约束（违反即导入报错）
+
+以下规则由实际模板验证得出，违反任一条都会导致导入时报错或运行时异常。
+
+### H1: 顶层 `template` 字段必须是 JSON 字符串
+- `d['template']` 的值必须是 `json.dumps(template_object, ensure_ascii=False)` 的结果
+- 即字符串类型，不是嵌套对象
+- 系统会先 `JSON.parse` 外层拿到 `template`（此时是字符串），再 `JSON.parse` 一次拿到模板对象
+- 如果直接放嵌套对象，二次 parse 会报错
+
+### H2: `source` 必须是纯二维数组
+- 格式：`[[str|null, str|null, ...], ...]`
+- 不允许写成 `{"rows": [...], "cols": {...}}` 等嵌套对象
+- 所有值只能是字符串或 `null`，不能是数字、布尔值、对象
+
+### H3: `meta` 必须是扁平列表
+- 格式：`[{row, col, s, proxyCell, ...}, ...]`，一维列表
+- 长度 = 行数 × 列数，每个元素对应一个单元格
+- 不允许写成 `{"widgetIds": [...], "name": ...}` 等字典格式
+
+### H4: `scopeConfig` 必须是列表
+- 格式：`[{name, defaultValue, type, desc}, ...]`，列表
+- 不是字典/对象
+- 每个 `name` 必须与对应 widget 的 `scopeField` 完全匹配（区分大小写）
+
+### H5: `eventConfig` 必须是列表且包含全部 7 个标准事件
+- 格式：`[{eventName, expressionStatement}, ...]`，列表
+- 必须包含：`beforeload`、`afterload`、`beforerender`、`afterrender`、`beforeprint`、`afterprint`、`childReportMsg`
+- 即使脚本为空，也必须有 `{"eventName": "xxx", "expressionStatement": ""}`
+- 不是字典，不是空数组
+
+### H6: `resized.rows`/`resized.cols` 元素必须是纯数字
+- `resized.rows` 是 `[22, 28, 22, ...]` 纯数字列表
+- `resized.cols` 是 `[76, 76, ...]` 纯数字列表
+- 不允许 `[{"height": 22}]` 对象格式
+
+### H7: `merges` 元素必须是对象
+- 每个 merge 元素必须是 `{"startRow": sr, "startColumn": sc, "endRow": er, "endColumn": ec}` 对象
+- 不允许使用数组 `[sr, sc, er, ec]` 格式
+
+### H8: `reportConfig` 必须从已验证模板深拷贝
+- `reportConfig` 包含 14 个标准字段：`pageConfig`、`splitLayout`、`headerRepeat`、`footerRepeat`、`headerFrozen`、`followUpPrintOpt`、`scopeConfig`、`searchBarConfig`、`eventConfig`、`serviceConfig`、`headerOptions`、`printOptions`、`functionConfig`、`engineConfig`
+- 生成新报表时，从已验证可用的模板（如催产素报表）深拷贝整个 `reportConfig`
+- 只替换 `scopeConfig` 和 `eventConfig`，其余 12 个字段保持原样
+- 不可自行构造或缩减字段
+
+### H9: `proxyCell=true` 的 cell 不能有 widget
+- `proxyCell: true` 的 cell 不能包含 `widget` 字段
+- 但 `proxyCell: false` 且在 merge 范围内的 cell 可以有 widget（用于特殊布局）
+- widget 只应放在 merge 区域的主单元格（左上角）或非合并单元格
+
+### H10: 所有 `proxyCell=true` 的 cell 必须有 `realCellPosition`
+- 格式：`{"realCellPosition": {"row": sr, "col": sc}}`
+- 指向所属 merge 区域的主单元格（左上角）坐标
+- 缺失会导致渲染时找不到真实单元格位置
+
+### H11: `dataMaker` 换行必须用 `\r\n`
+- `componentLogic.dataSource.dataMaker` 字符串中的换行符必须是 `\r\n`，不是 `\n`
+- 生成时使用 `json.dumps(opts, ensure_ascii=False, indent=2).replace('\n', '\r\n')`
+
+### H12: ZIP 内容必须用 UTF-8 编码
+- `.report` 文件内容必须用 `utf-8` 编码写入 ZIP
+- JSON 序列化必须 `ensure_ascii=False`（保留中文字符，不转义为 `\uXXXX`）
 
 ## 整体架构
 
 ### reportReference 结构
-- `source`: 二维数组，每行是一个数组，所有值统一为字符串或 null
-- `meta`: cell 数组，每个cell必须有 `row`/`col`/`s`/`proxyCell` 字段
-- `merges`: 合并区域数组，格式为 `startRow`/`startColumn`/`endRow`/`endColumn`
-- `resized`: `{rows: [...], cols: [...]}`，行高/列宽按实际需要设置
+- `source`: 纯二维数组 `[[str|null, ...], ...]`，不是嵌套对象（见 H2）
+- `meta`: 扁平列表，每个cell必须有 `row`/`col`/`s`/`proxyCell` 字段（见 H3）
+- `merges`: 对象数组，每个元素为 `{"startRow"/"startColumn"/"endRow"/"endColumn"}`（见 H7）
+- `resized`: `{rows: [数字, ...], cols: [数字, ...]}`，元素为纯数字（见 H6）
 - `hidden`: `{rows: [], cols: []}`
 - `floatElements`: `[]`
 
-### reportConfig 结构
-- `pageConfig`: 页面配置（direction, pagePadding, pageW, pageH, unit等）
-- `splitLayout`, `headerRepeat`, `footerRepeat`, `headerFrozen`, `followUpPrintOpt`
-- `scopeConfig`: 字段配置数组
-- `searchBarConfig`, `eventConfig`, `serviceConfig`
-- `headerOptions`, `printOptions`, `functionConfig`, `engineConfig`
+### reportConfig 结构（见 H8）
+- 从已验证模板深拷贝，只替换 `scopeConfig` 和 `eventConfig`
+- 14 个标准字段：`pageConfig`、`splitLayout`、`headerRepeat`、`footerRepeat`、`headerFrozen`、`followUpPrintOpt`、`scopeConfig`、`searchBarConfig`、`eventConfig`、`serviceConfig`、`headerOptions`、`printOptions`、`functionConfig`、`engineConfig`
 
 ## source 格式规则
 
@@ -56,7 +117,7 @@ description: "智能护理表单模板生成器"
 - **所有cell**必须有: `row`, `col`, `s`, `proxyCell`
 - **Normal cell**: 有 `v`（文本值），部分有 `t`（不是所有都有）
 - **Widget cell**: 大多数**没有** `t`/`v` 字段；部分有 `v`/`t`（见下方详细说明）
-- **Proxy cell**: 没有 `t`/`v`，必须有 `realCellPosition: {row, col}`
+- **Proxy cell**: 没有 `t`/`v`，必须有 `realCellPosition: {row, col}`（见 H10）
 
 ### Widget cell 的 v/t 规则
 - **input widget（readonly=false）**: 通常**没有** `t`/`v`
@@ -277,7 +338,7 @@ description: "智能护理表单模板生成器"
 ```
 - **没有** `t`/`v` 字段
 
-## Proxy Cell格式
+## Proxy Cell格式（见 H9、H10）
 ```json
 {
   "row": r, "col": c,
@@ -287,6 +348,8 @@ description: "智能护理表单模板生成器"
 }
 ```
 - **没有** `t`/`v` 字段
+- **不能有** `widget` 字段（见 H9）
+- 必须有 `realCellPosition`（见 H10）
 - `s` 完全继承主单元格(sr,sc)的样式
 
 ## 占位符处理规则
@@ -305,14 +368,16 @@ description: "智能护理表单模板生成器"
    - 都不在 -> 检查是否是merge区域 -> proxyCell / 普通空白cell
 3. 如果 val 是字符串 -> 普通文本cell
 
-## Merges规则
-- 格式: `{"startRow": sr, "startColumn": sc, "endRow": er, "endColumn": ec}`
+## Merges规则（见 H7）
+- 每个元素必须是对象: `{"startRow": sr, "startColumn": sc, "endRow": er, "endColumn": ec}`
+- 不允许使用数组 `[sr, sc, er, ec]` 格式
 - 合并非常精细（参考模板有41个merge），按实际内容需求合并
 - 每个merge区域内，除主单元格(sr,sc)外的所有cell设置 `proxyCell: true`
 - proxyCell的 `s` 完全继承主单元格样式
+- proxyCell 必须有 `realCellPosition`（见 H10）
 
-## 列宽/行高规则
-- `resized.rows`: 按实际需要设置不同行高（如 `[24, 24, 22, 22, 22, ...]`）
+## 列宽/行高规则（见 H6）
+- `resized.rows`: 纯数字列表，按实际需要设置不同行高（如 `[24, 24, 22, 22, 22, ...]`）
 - `resized.cols`: 按实际需要设置不同列宽（如 `[50, 79, 50, 79, ...]`）
 - 不是统一固定值
 - **关键约束**: `len(resized.rows)` 必须严格等于 `len(source)`，`len(resized.cols)` 必须等于 source 每行的列数
@@ -324,30 +389,36 @@ description: "智能护理表单模板生成器"
   - 12列布局建议: 交替 label(50px) + input(79px) = 774px
 
 ## 顶层数据结构格式
-- `id`: UUID格式
+- `id`: UUID格式（hex，24字符，如 `uuid.uuid4().hex[:24]`）
 - `cd`: 表单编码
 - `na`: 表单名称
+- `template`: **JSON 字符串**（`json.dumps(template_object, ensure_ascii=False)`），不是嵌套对象（见 H1）
 - `categoryId`: 分类ID（如 `"hihis@hihis/nenr@nenr/nenr_form@nenr_form/nenr_form_xyz"`）
 - `version`: 版本号（如 `"1.0.1"`, `"1.0.6"`）
 - `instr`: 包含cd、na、拼音缩写的字符串
-- `tenantId`: 租户ID（如 `"BSOFTYL..."`）
+- `tenantId`: 租户ID（如 `"BSOFTYL"`）
 - `createDate`/`modifyDate`: `"yyyy-MM-dd HH:mm:ss"` 格式
-- `createUser`/`modifyUser`: UUID格式
+- `createUser`/`modifyUser`: 字符串（如 `"admin"`，不需要 UUID 格式）
 - `active`: true
 
-## scopeConfig规则
+## scopeConfig规则（见 H4）
+- **必须是列表**，不是字典
 - 每个控件对应一个scope_config条目
-- 格式: `{"name": "scope字段名", "defaultValue": "", "type": "string", "remark": "中文说明"}`
-- 或者使用 `desc` 替代 `remark`: `{"name": "scope字段名", "desc": "中文说明", "type": "string"}`
+- 格式: `{"name": "scope字段名", "defaultValue": "", "type": "string", "desc": "中文说明"}`
+- `desc` 是已验证模板使用的字段名（推荐使用 `desc`，不用 `remark`）
 - `name` 使用小写scope字段名
+- **`name` 必须与对应 widget 的 `scopeField` 完全匹配**（区分大小写）
 - `type` 可以是 `"string"`, `"array"`, `"object"` 等
 - `defaultValue` 对于array类型可以是 `[]`，对于object类型可以是 `{}`
 - 部分模板包含内置scope字段如 `nurseFormContext`（类型"object"，描述"患者信息等基础内置上下文"）
 
-## eventConfig规则
-- **可选**: 部分模板没有eventConfig（空数组），部分有
-- 包含标准事件: beforeload, afterload, beforerender, afterrender, beforeprint, afterprint, childReportMsg
+## eventConfig规则（见 H5）
+- **必须是列表**，包含全部 7 个标准事件，不是字典，不是空数组
+- 每个事件格式: `{"eventName": "事件名", "expressionStatement": "脚本或空字符串"}`
+- 7 个标准事件: `beforeload`, `afterload`, `beforerender`, `afterrender`, `beforeprint`, `afterprint`, `childReportMsg`
+- 即使脚本为空，也必须有 `{"eventName": "xxx", "expressionStatement": ""}`
 - `beforerender` 中常包含自动填充患者信息的脚本
+- `expressionStatement` 中的 `$$scope.xxx` 必须与对应 widget 的 `scopeField` 完全一致（区分大小写）
 - 示例beforerender脚本:
   ```javascript
   $$scope.ym_xm = $$scope.nurseFormContext?.patientInfo?.name;
@@ -398,12 +469,14 @@ description: "智能护理表单模板生成器"
 - 选项数据通过 `dataMaker` 传入，每个选项为 `{label, value}` 格式
 - 不要为每个选项创建独立的checkboxgroup单元格
 
-## 输出格式规则（关键）
+## 输出格式规则（见 H1、H12）
 - **最终输出是 ZIP 压缩包**，不是单个 `.report` 文件
 - ZIP 包命名格式：`nenr_form_<编码>-<版本>.zip`（如 `nenr_form_oxytocin_record-1.0.1.zip`）
 - ZIP 包内只包含一个文件，命名格式：`nenr_form_<编码>-<版本>.report`（如 `nenr_form_oxytocin_record-1.0.1.report`）
-- `.report` 文件内容就是完整的 JSON 数据（即 reportConfig + reportReference 的合并对象）
+- `.report` 文件内容就是完整的 JSON 数据（顶层对象含 `id`/`cd`/`na`/`template` 等字段）
 - `.report` 只是 JSON 的扩展名，内容仍是标准 JSON
+- **`template` 字段的值必须是 JSON 字符串**，不是嵌套对象（见 H1）
+- **ZIP 内文件必须用 UTF-8 编码**，JSON 序列化必须 `ensure_ascii=False`（见 H12）
 
 ## identifier 命名规则（关键）
 - `identifier` 和 `scopeField` 字段**会被系统当作 JavaScript 变量名使用**
