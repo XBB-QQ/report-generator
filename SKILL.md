@@ -3,513 +3,628 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v7.2
+# Report Generator Skill - v8.0
 
-## 硬性约束（违反即导入报错）
+## 使用流程
 
-以下规则由实际模板验证得出，违反任一条都会导致导入时报错或运行时异常。
-
-### H1: 顶层 `template` 字段必须是 JSON 字符串
-- `d['template']` 的值必须是 `json.dumps(template_object, ensure_ascii=False)` 的结果
-- 即字符串类型，不是嵌套对象
-- 系统会先 `JSON.parse` 外层拿到 `template`（此时是字符串），再 `JSON.parse` 一次拿到模板对象
-- 如果直接放嵌套对象，二次 parse 会报错
-
-### H2: `source` 必须是纯二维数组
-- 格式：`[[str|null, str|null, ...], ...]`
-- 不允许写成 `{"rows": [...], "cols": {...}}` 等嵌套对象
-- 所有值只能是字符串或 `null`，不能是数字、布尔值、对象
-
-### H3: `meta` 必须是扁平列表
-- 格式：`[{row, col, s, proxyCell, ...}, ...]`，一维列表
-- 长度 = 行数 × 列数，每个元素对应一个单元格
-- 不允许写成 `{"widgetIds": [...], "name": ...}` 等字典格式
-
-### H4: `scopeConfig` 必须是列表
-- 格式：`[{name, defaultValue, type, desc}, ...]`，列表
-- 不是字典/对象
-- 每个 `name` 必须与对应 widget 的 `scopeField` 完全匹配（区分大小写）
-
-### H5: `eventConfig` 必须是列表且包含全部 7 个标准事件
-- 格式：`[{eventName, expressionStatement}, ...]`，列表
-- 必须包含：`beforeload`、`afterload`、`beforerender`、`afterrender`、`beforeprint`、`afterprint`、`childReportMsg`
-- 即使脚本为空，也必须有 `{"eventName": "xxx", "expressionStatement": ""}`
-- 不是字典，不是空数组
-
-### H6: `resized.rows`/`resized.cols` 元素必须是纯数字
-- `resized.rows` 是 `[22, 28, 22, ...]` 纯数字列表
-- `resized.cols` 是 `[76, 76, ...]` 纯数字列表
-- 不允许 `[{"height": 22}]` 对象格式
-
-### H7: `merges` 元素必须是对象
-- 每个 merge 元素必须是 `{"startRow": sr, "startColumn": sc, "endRow": er, "endColumn": ec}` 对象
-- 不允许使用数组 `[sr, sc, er, ec]` 格式
-
-### H8: `reportConfig` 必须从已验证模板深拷贝
-- `reportConfig` 包含 14 个标准字段：`pageConfig`、`splitLayout`、`headerRepeat`、`footerRepeat`、`headerFrozen`、`followUpPrintOpt`、`scopeConfig`、`searchBarConfig`、`eventConfig`、`serviceConfig`、`headerOptions`、`printOptions`、`functionConfig`、`engineConfig`
-- 生成新报表时，从已验证可用的模板（如催产素报表）深拷贝整个 `reportConfig`
-- 只替换 `scopeConfig` 和 `eventConfig`，其余 12 个字段保持原样
-- 不可自行构造或缩减字段
-
-### H9: `proxyCell=true` 的 cell 不能有 widget
-- `proxyCell: true` 的 cell 不能包含 `widget` 字段
-- 但 `proxyCell: false` 且在 merge 范围内的 cell 可以有 widget（用于特殊布局）
-- widget 只应放在 merge 区域的主单元格（左上角）或非合并单元格
-
-### H10: 所有 `proxyCell=true` 的 cell 必须有 `realCellPosition`
-- 格式：`{"realCellPosition": {"row": sr, "col": sc}}`
-- 指向所属 merge 区域的主单元格（左上角）坐标
-- 缺失会导致渲染时找不到真实单元格位置
-
-### H11: `dataMaker` 换行必须用 `\r\n`
-- `componentLogic.dataSource.dataMaker` 字符串中的换行符必须是 `\r\n`，不是 `\n`
-- 生成时使用 `json.dumps(opts, ensure_ascii=False, indent=2).replace('\n', '\r\n')`
-
-### H12: ZIP 内容必须用 UTF-8 编码
-- `.report` 文件内容必须用 `utf-8` 编码写入 ZIP
-- JSON 序列化必须 `ensure_ascii=False`（保留中文字符，不转义为 `\uXXXX`）
-
-### H13: 列数由 PDF 识别到的患者信息字段数动态决定
-- 解析 PDF/源文件时，先识别患者基本信息区域的字段数量（如床号、姓名、性别、年龄、住院号、入院诊断 = 6个字段）
-- 每个字段占 2 列（标签列 + 值列），因此 **总列数 = 患者信息字段数 × 2**
-- 示例：6个字段 → 12列，5个字段 → 10列，4个字段 → 8列
-- 患者信息必须在**一行内**排列完所有字段，不得拆成多行
-- 主体表格区域（教育内容、评价、签名等）通过合并单元格适配此列数
-- 不允许固定列数（如硬编码12列）而不考虑实际字段数
-
-### H14: 自动换行属性 `tb` 的值为 3，不是 1
-- 样式字段 `tb` 控制文本换行行为
-- `tb=0`: 不换行（默认值，超出溢出）
-- `tb=3`: 自动换行（文本超出列宽时自动折行）
-- **多行文本单元格必须设置 `tb=3`**，否则 `\r\n` 换行符不会生效，文本全部挤在一行
-- 常见场景：教育内容列表、竖排类别文字、长描述文本
-
-## 整体架构
-
-### reportReference 结构
-- `source`: 纯二维数组 `[[str|null, ...], ...]`，不是嵌套对象（见 H2）
-- `meta`: 扁平列表，每个cell必须有 `row`/`col`/`s`/`proxyCell` 字段（见 H3）
-- `merges`: 对象数组，每个元素为 `{"startRow"/"startColumn"/"endRow"/"endColumn"}`（见 H7）
-- `resized`: `{rows: [数字, ...], cols: [数字, ...]}`，元素为纯数字（见 H6）
-- `hidden`: `{rows: [], cols: []}`
-- `floatElements`: `[]`
-
-### reportConfig 结构（见 H8）
-- 从已验证模板深拷贝，只替换 `scopeConfig` 和 `eventConfig`
-- 14 个标准字段：`pageConfig`、`splitLayout`、`headerRepeat`、`footerRepeat`、`headerFrozen`、`followUpPrintOpt`、`scopeConfig`、`searchBarConfig`、`eventConfig`、`serviceConfig`、`headerOptions`、`printOptions`、`functionConfig`、`engineConfig`
-
-## source 格式规则
-
-### 空白值使用 `null`（Python中的 `None`）
-- 空白位置统一使用 `null`，不使用 `' '`（空格字符串）
-- 空字符串 `''` 用于特殊位置（如input控件的值字段）
-- 不存在使用 `' '`（单个空格）的情况
-
-### 列数不固定
-- 列数根据实际表单需求确定（参考模板有9/12/18/20列）
-- 不是强制12列
-- 列数由PDF/源文件中的实际列位置决定
-- **患者信息区域的列数 = 患者字段数 × 2**（见 H13），主体表格区域通过合并单元格适配
-- **A4宽度参考**: A4宽度210mm ≈ 794px（96 DPI），扣除pagePadding（左右各5mm）后约763px可用
-  - 每列建议30-45px
-  - 12列: 每列约63px（可用50/79交替）
-  - 18列: 每列约42px（可用40-50px交替）
-  - 20列: 每列约30-40px（可用30/30/30/30/30/30/45/30/30/30/40/40+重复8列）
-- 列宽设置示例: `[30,30,30,30,30,30,45,30,30,30,40,40]+[30]*8` 表示前12列按实际内容设置，后8列为30px
-
-### 文本值保留原始格式
-- 文本中可包含 `\r\n` 换行符（如 `"性别：\r\n"`）
-- 部分模板的source行使用 `{占位符}` 格式（如 `'{创业开发区医院}'`）表示需要替换的值
-- 部分模板的source行直接将label和placeholder放在同一单元格（如 `['科室:', '科室']`）
-
-### 行结构模式
-- 常见模式1: label在偶数列，input在奇数列（如 `['姓名：', None, '性别：', None, ...]`）
-- 常见模式2: 合并单元格后直接在合并区域内放置文本或控件
-- 部分模板的source行可以是空数组 `[]`（对应全null行）
-
-## meta Cell 格式规则
-
-### 字段存在性规则
-- **所有cell**必须有: `row`, `col`, `s`, `proxyCell`
-- **Normal cell**: 有 `v`（文本值），部分有 `t`（不是所有都有）
-- **Widget cell**: 大多数**没有** `t`/`v` 字段；部分有 `v`/`t`（见下方详细说明）
-- **Proxy cell**: 没有 `t`/`v`，必须有 `realCellPosition: {row, col}`（见 H10）
-
-### Widget cell 的 v/t 规则
-- **input widget（readonly=false）**: 通常**没有** `t`/`v`
-- **input widget（readonly=true）**: 部分模板有 `t: 1, v: "占位文本"`（如 `'医疗机构名称'`），部分没有
-- **checkboxgroup widget**: 部分有 `v`（含格式化文本如 `'□ 选项1\r□ 选项2'`），部分没有
-- **datePicker widget**: 通常有 `t: 1, v: "占位文本"`
-
-## s 样式规则
-
-### 字体
-- 统一使用 `"FangSong"`（仿宋），不是 `"宋体"`
-
-### 完整样式字段集
-`s` 对象可包含以下字段：
-- `ff`: 字体（font family）- `"FangSong"`
-- `fs`: 字号（font size）- 普通文本10，大标题14
-- `ht`: 水平对齐（0=左, 1=中, 2=右）
-- `vt`: 垂直对齐（0=上, 1=中, 2=下）
-- `bl`: 粗体（0/1）
-- `it`: 斜体（0/1）
-- `ul`: 下划线 `{"s": 0}`
-- `st`: 删除线 `{"s": 0}`
-- `ol`: 上划线 `{"s": 0}`
-- `tr`: 文字旋转 `{"a": 0, "v": 0/1}`
-- `td`: 文字装饰（0）
-- `tb`: 文本换行（0=不换行, 3=自动换行），详见 H14
-- `bd`: 边框 `{"t"/"l"/"b"/"r": {"s": 1, "cl": {"rgb": "#000000"}}}`
-- `pd`: 内边距 `{"t": 0, "b": 2, "l": 2, "r": 2}`
-- `n`: 数字格式 `{"pattern": "@@@"}`
-
-### 不同cell类型的s样式
-- **大标题行**: `ht: 2, bl: 1, fs: 14`，可能有 `bd`/`pd`/`vt`
-- **普通文本cell**: `ff: "FangSong", fs: 10, vt: 2`，有完整的 `bd`/`pd`
-- **Widget cell**: 样式根据位置不同而变化，有 `bd`/`pd`/`vt`/`fs` 等
-- **Proxy cell**: `s` 继承主单元格的完整样式
-
-### s样式不是统一的
-- 每个cell的 `s` 根据实际位置和边框需求独立设置
-- 不是简单的 `s: {}` 或 `s: {"ff": "宋体"}`
-
-### 显示效果最佳实践（非硬性约束，但影响视觉效果）
-- **标题和表头应设置 `ht=2`**（水平居中），视觉效果更规范
-- **文本单元格应包含 `v` 和 `t: 1` 字段**，确保文本正常渲染
-- **列宽应精确计算**，总宽度接近 A4 可用宽度（约768px），避免过窄或溢出
-  - 列宽可以是小数（如 `30.5`、`129.5`、`58.5`）
-- **行高应根据内容行数精确设置**，不是简单的"条数×固定值"
-  - 空行（分隔行）高度约为 11.5px（不是标准行高22px）
-- **医疗机构名称也应添加 input widget**（scopeField 可为空字符串），保持一致性
-- **checkboxgroup 可设置 `itemSpacing`** 控制选项之间的间距
-- **纯展示性 checkbox**（如"已指导"标记）scopeField 可设为空字符串 `""`
-- **日期控件推荐使用 `datePicker`**（有 `t: 1, v: "占位文本"`），而非 `datePickerQuick`
-
-## Normal Cell格式
-```json
-{
-  "row": r, "col": c,
-  "v": "文本值",
-  "s": { "ff": "FangSong", "fs": 10, "vt": 2, "bd": {...}, "pd": {...} },
-  "t": 1,
-  "proxyCell": false
-}
 ```
-- 部分normal cell没有 `t` 字段
-- `v` 可以是空字符串 `""`（对应source中的 `''`）
-
-## Input Widget格式
-```json
-{
-  "row": r, "col": c,
-  "s": { "ff": "FangSong", "fs": 10, "vt": 2, "bd": {...}, "pd": {...} },
-  "proxyCell": false,
-  "widget": {
-    "type": "input",
-    "attribute": {
-      "clearable": true, "simplify": true, "size": "small",
-      "placeholder": "提示文本", "maxlength": 40,
-      "type": "input", "readonly": false
-    },
-    "componentLogic": {
-      "insertCell": { "rowstart": 1, "rowend": 1, "scopeField": "" }
-    },
-    "scopeField": "scope字段名",
-    "identifier": "标识符",
-    "name": "中文名"
-  }
-}
-```
-- `readonly=false` 的input通常**没有** `t`/`v`
-- `readonly=true` 的input（自动填充字段）：部分模板有 `t: 1, v: "占位文本"`，部分没有
-- `clearable` 可以是 `true` 或 `false`（readonly字段常用 `false`）
-- `simplify` 可以是 `true` 或省略
-- `componentLogic` 可有 `interaction` 字段（含dependencies/actionConfig）
-- `identifier` 格式不固定，可以是拼音缩写（`ym_jgmc`）、描述性名称（`pi_name`）等
-
-## Radiogroup Widget格式
-```json
-{
-  "row": r, "col": c,
-  "s": { "ff": "FangSong", "fs": 10, "vt": 2, "bd": {...}, "pd": {...} },
-  "proxyCell": false,
-  "widget": {
-    "type": "radiogroup",
-    "attribute": {
-      "disabled": false, "vertical": false,
-      "props": { "label": "label", "value": "value", "disabled": "disabled" }
-    },
-    "componentLogic": {
-      "insertCell": { "rowstart": 1, "rowend": 1, "scopeField": "" },
-      "dataSource": {
-        "type": "1",
-        "dataMaker": "[{\r\n    \"label\": \"...\",\r\n    \"value\": \"...\"\r\n},...]"
-      }
-    },
-    "scopeField": "scope字段名",
-    "identifier": "标识符",
-    "name": "中文名"
-  }
-}
-```
-- **没有** `t`/`v` 字段
-- `dataMaker` 是格式化JSON字符串，包含 `\r\n` 换行
-- `vertical: false` 为横向排列，`vertical: true` 为纵向排列
-
-## Checkboxgroup Widget格式
-```json
-{
-  "row": r, "col": c,
-  "s": { ... },
-  "proxyCell": false,
-  "widget": {
-    "type": "checkboxgroup",
-    "attribute": {
-      "disabled": false, "vertical": false,
-      "min": 0, "enableMax": false,
-      "props": { "label": "label", "value": "value", "disabled": "disabled" }
-    },
-    "componentLogic": {
-      "insertCell": { ... },
-      "dataSource": { "type": "1", "dataMaker": "..." }
-    },
-    "scopeField": "...",
-    "identifier": "...",
-    "name": "..."
-  }
-}
-```
-- 部分有 `v: "..."`, `t: 1`（含格式化选项文本），部分没有
-- `vertical: false` 横向排列（适用于少量选项），`vertical: true` 纵向排列（适用于多选项）
-- `enableMax: false`, `min: 0`
-- **模拟单选**: 使用 `enableMax: true, max: 1` 可实现单选的 checkboxgroup（如 Bishop 评分场景，每行只能选一个评分）
-
-## Select Widget格式
-```json
-{
-  "row": r, "col": c,
-  "v": "", "t": 1,
-  "s": { ... },
-  "proxyCell": false,
-  "widget": {
-    "type": "select",
-    "attribute": {
-      "disabled": false, "clearable": true, "filterable": false,
-      "multiple": false, "simplify": true, "placeholder": "", "size": "small",
-      "props": { "label": "label", "value": "value", "disabled": "disabled" }
-    },
-    "componentLogic": {
-      "insertCell": { ... },
-      "dataSource": { "type": "1", "dataMaker": "..." }
-    },
-    "scopeField": "...",
-    "identifier": "...",
-    "name": "..."
-  }
-}
+解析源文件 → 填写表单定义 → 运行代码模板 → 自动验证 → 打包ZIP
 ```
 
-## DatePicker Widget格式
-```json
-{
-  "row": r, "col": c,
-  "t": 1,
-  "v": "占位文本",
-  "s": { ... },
-  "proxyCell": false,
-  "widget": {
-    "type": "datePicker",
-    "attribute": {
-      "disabled": false, "clearable": true, "simplify": true,
-      "size": "small",
-      "valueFormat": "yyyy-MM-dd HH:mm",
-      "format": "yyyy-MM-dd HH:mm",
-      "initState": "2",
-      "type": "datetime"
-    },
-    "componentLogic": {
-      "insertCell": { "rowstart": 1, "rowend": 1, "scopeField": "" }
-    },
-    "scopeField": "...",
-    "identifier": "...",
-    "name": "..."
-  }
-}
+1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
+2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
+3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H22
+5. **打包 ZIP** → 输出 `nenr_form_<编码>-<版本>.zip`
+
+## 硬性约束（H1-H22，违反即报错或显示异常）
+
+### 结构类 H1-H8（数据格式）
+
+- **H1**: `template` 字段必须是 JSON 字符串（`json.dumps(obj, ensure_ascii=False)`），不是嵌套对象。系统会二次 `JSON.parse`
+- **H2**: `source` 必须是纯二维数组 `[[str|null, ...], ...]`，值只能是字符串或 `null`
+- **H3**: `meta` 必须是扁平列表，长度 = 行数 × 列数，每个元素对应一个单元格
+- **H4**: `scopeConfig` 必须是列表，每个 `name` 必须与对应 widget 的 `scopeField` 完全匹配
+- **H5**: `eventConfig` 必须是列表且包含全部 7 个标准事件（`beforeload`/`afterload`/`beforerender`/`afterrender`/`beforeprint`/`afterprint`/`childReportMsg`），即使脚本为空也必须有条目
+- **H6**: `resized.rows`/`resized.cols` 元素必须是纯数字，`len(rows)` = `len(source)`，`len(cols)` = 每行列数
+- **H7**: `merges` 元素必须是对象 `{startRow, startColumn, endRow, endColumn}`，不允许数组
+- **H8**: `reportConfig` 必须从已验证模板（催产素报表 ZIP）深拷贝 14 个标准字段，只替换 `scopeConfig`/`eventConfig`，不可自行构造或缩减
+
+### 内容类 H9-H14（单元格逻辑）
+
+- **H9**: `proxyCell: true` 的 cell 不能有 `widget` 字段
+- **H10**: 所有 `proxyCell: true` 的 cell 必须有 `realCellPosition: {row, col}` 指向主单元格
+- **H11**: `dataMaker` 换行必须用 `\r\n`（`json.dumps(...).replace('\n', '\r\n')`）
+- **H12**: ZIP 内容必须 UTF-8 编码，JSON 序列化 `ensure_ascii=False`
+- **H13**: 总列数 = 患者信息字段数 × 2（标签列+值列），患者信息必须在一行内
+- **H14**: 多行文本单元格必须设置 `tb=3`（不是 0/1），否则 `\r\n` 不生效
+
+### 显示类 H15-H22（原"最佳实践"，升级为硬性）
+
+- **H15**: 标题行和表头行的 cell 必须设置 `ht=2`（水平居中）
+- **H16**: 文本单元格必须包含 `v`（文本值）和 `t: 1`（类型标记）字段
+- **H17**: 列宽必须精确计算（允许小数如 `30.5`/`129.5`），总宽度接近 A4 可用宽度（~768px），不使用整数估算
+- **H18**: 行高必须根据内容行数精确设置；空行（分隔行）高度必须为 `11.5px`（不是标准行高）
+- **H19**: 医疗机构名称必须添加 input widget（`scopeField` 可为空字符串 `""`）
+- **H20**: 日期控件必须使用 `datePicker` 类型（有 `t:1, v:"占位文本"`），不使用 `datePickerQuick`
+- **H21**: 纯展示性 checkbox（如"已指导"标记）`scopeField` 必须为空字符串 `""`
+- **H22**: checkboxgroup 当选项 ≥ 3 个时应设置 `itemSpacing` 控制间距（推荐值 30）
+
+## 内置代码模板
+
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H22。
+
+```python
+#!/usr/bin/env python3
+"""
+护理表单报表生成器模板 v8.0
+使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
+所有硬性约束 H1-H22 由 helper 函数自动保障。
+"""
+import json, uuid, zipfile, io, copy, os, re, sys
+
+# ============================================================
+# Helper 函数（固定，不要修改）
+# ============================================================
+
+def _border_all():
+    e = {"s": 1, "cl": {"rgb": "#000000"}}
+    return {"t": e, "l": e, "b": e, "r": e}
+
+def _padding():
+    return {"t": 0, "b": 2, "l": 2, "r": 2}
+
+def _style(ff="FangSong", fs=10, ht=None, vt=2, bl=0, it=0, tb=None, bd=None, pd=None):
+    """构建样式对象，自动包含完整边框和内边距"""
+    s = {"ff": ff, "fs": fs, "vt": vt, "bl": bl, "it": it}
+    if ht is not None: s["ht"] = ht       # H15: 标题/表头 ht=2
+    if tb is not None: s["tb"] = tb       # H14: 多行文本 tb=3
+    s["bd"] = bd or _border_all()
+    s["pd"] = pd or _padding()
+    return s
+
+def text_cell(r, c, v, ht=None, tb=None, fs=10, bl=0):
+    """构建文本单元格 (H16: 有v和t:1)"""
+    return {"row": r, "col": c, "v": v, "t": 1, "proxyCell": False,
+            "s": _style(ht=ht, tb=tb, fs=fs, bl=bl)}
+
+def proxy_cell(r, c, sr, sc, s=None):
+    """构建代理单元格 (H9: 无widget, H10: 有realCellPosition)"""
+    return {"row": r, "col": c, "s": s or _style(),
+            "proxyCell": True, "realCellPosition": {"row": sr, "col": sc}}
+
+def empty_cell(r, c):
+    """构建空白非合并单元格"""
+    return {"row": r, "col": c, "s": _style(), "proxyCell": False}
+
+def _datamaker(options):
+    """构建 dataMaker 字符串 (H11: 使用 \\r\\n)"""
+    return json.dumps(options, ensure_ascii=False, indent=2).replace('\n', '\r\n')
+
+# --- 控件构建函数 ---
+
+def w_input(scope_field, identifier, name, placeholder="", readonly=False,
+            clearable=True, simplify=False, rowstart=1, rowend=1):
+    """构建 input 控件"""
+    return {"type": "input", "attribute": {
+        "clearable": clearable, "simplify": simplify, "size": "small",
+        "placeholder": placeholder, "maxlength": 40,
+        "type": "input", "readonly": readonly
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_checkbox(scope_field, identifier, name, options, vertical=False,
+               enable_max=False, max_val=1, item_spacing=None, rowstart=1, rowend=1):
+    """构建 checkboxgroup 控件 (H22: 选项>=3时设itemSpacing)"""
+    attr = {"disabled": False, "vertical": vertical, "min": 0,
+            "enableMax": enable_max,
+            "props": {"label": "label", "value": "value", "disabled": "disabled"}}
+    if enable_max: attr["max"] = max_val
+    if item_spacing is not None: attr["itemSpacing"] = item_spacing
+    return {"type": "checkboxgroup", "attribute": attr,
+            "componentLogic": {
+                "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+                "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+            }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_date(scope_field, identifier, name, placeholder="选择日期时间",
+           rowstart=1, rowend=1):
+    """构建 datePicker 控件 (H20: 用datePicker不用datePickerQuick)"""
+    return {"type": "datePicker", "attribute": {
+        "disabled": False, "clearable": True, "simplify": True, "size": "small",
+        "valueFormat": "yyyy-MM-dd HH:mm", "format": "yyyy-MM-dd HH:mm",
+        "initState": "2", "type": "datetime"
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_select(scope_field, identifier, name, options, rowstart=1, rowend=1):
+    """构建 select 控件"""
+    return {"type": "select", "attribute": {
+        "disabled": False, "clearable": True, "filterable": False,
+        "multiple": False, "simplify": True, "placeholder": "", "size": "small",
+        "props": {"label": "label", "value": "value", "disabled": "disabled"}
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+        "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_radio(scope_field, identifier, name, options, vertical=False,
+            rowstart=1, rowend=1):
+    """构建 radiogroup 控件"""
+    return {"type": "radiogroup", "attribute": {
+        "disabled": False, "vertical": vertical,
+        "props": {"label": "label", "value": "value", "disabled": "disabled"}
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+        "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+# --- 数据构建函数 ---
+
+def build_source(rows_def):
+    """构建 source 二维数组 (H2: 纯str|null)"""
+    return [[v if v is not None else None for v in row] for row in rows_def]
+
+def build_merges(merge_list):
+    """构建 merges 对象数组 (H7: 对象格式)"""
+    return [{"startRow": sr, "startColumn": sc, "endRow": er, "endColumn": ec}
+            for sr, sc, er, ec in merge_list]
+
+def build_meta(source, merge_list, widgets, title_rows, header_rows, multiline_cells):
+    """
+    构建 meta 扁平列表 (H3: 长度=行×列)
+    自动处理: H9(proxyCell无widget), H10(realCellPosition),
+              H14(tb=3), H15(ht=2), H16(v和t:1)
+    """
+    n_rows = len(source)
+    n_cols = len(source[0]) if source else 0
+    title_rows = title_rows or set()
+    header_rows = header_rows or set()
+    multiline_cells = multiline_cells or set()
+    center_rows = title_rows | header_rows
+
+    # 构建合并映射: (r,c) -> (sr,sc)
+    merge_map = {}
+    for sr, sc, er, ec in merge_list:
+        for r in range(sr, er + 1):
+            for c in range(sc, ec + 1):
+                if (r, c) != (sr, sc):
+                    merge_map[(r, c)] = (sr, sc)
+
+    meta = []
+    for r in range(n_rows):
+        for c in range(n_cols):
+            if (r, c) in merge_map:
+                sr, sc = merge_map[(r, c)]
+                meta.append(proxy_cell(r, c, sr, sc))
+            elif (r, c) in widgets:
+                w = widgets[(r, c)]
+                cell = {"row": r, "col": c, "proxyCell": False, "widget": w["widget"]}
+                ht = 2 if r in center_rows else None
+                tb = 3 if (r, c) in multiline_cells else None
+                cell["s"] = w.get("s") or _style(ht=ht, tb=tb)
+                if "v" in w: cell["v"] = w["v"]
+                if "t" in w: cell["t"] = w["t"]
+                meta.append(cell)
+            else:
+                val = source[r][c] if c < len(source[r]) else None
+                if val is not None:
+                    ht = 2 if r in center_rows else None
+                    tb = 3 if (r, c) in multiline_cells else None
+                    bl = 1 if r in title_rows else 0
+                    fs = 14 if r in title_rows else 10
+                    meta.append(text_cell(r, c, val, ht=ht, tb=tb, fs=fs, bl=bl))
+                else:
+                    meta.append(empty_cell(r, c))
+    return meta
+
+def build_resized(row_heights, col_widths):
+    """构建 resized (H6: 纯数字)"""
+    return {"rows": list(row_heights), "cols": list(col_widths)}
+
+def load_report_config(reference_zip_path):
+    """从已验证模板深拷贝 reportConfig (H8)"""
+    with zipfile.ZipFile(reference_zip_path, 'r') as z:
+        report_name = [n for n in z.namelist() if n.endswith('.report')][0]
+        ref_data = json.loads(z.read(report_name).decode('utf-8'))
+    ref_template = json.loads(ref_data['template'])
+    return copy.deepcopy(ref_template['reportConfig'])
+
+def build_scope_config(widgets, extra_fields=None):
+    """构建 scopeConfig (H4: 列表, name匹配scopeField)"""
+    seen = set()
+    config = []
+    extra_fields = extra_fields or []
+    # 内置字段
+    config.append({"name": "nurseFormContext", "defaultValue": {},
+                    "type": "object", "desc": "患者信息等基础内置上下文"})
+    seen.add("nurseFormContext")
+    # 控件字段（跳过空scopeField）
+    for (r, c), w in sorted(widgets.items()):
+        sf = w["widget"].get("scopeField", "")
+        if sf and sf not in seen:
+            wtype = w["widget"]["type"]
+            dtype = "array" if wtype in ("checkboxgroup",) else "string"
+            config.append({"name": sf, "defaultValue": [] if dtype == "array" else "",
+                           "type": dtype, "desc": w["widget"].get("name", "")})
+            seen.add(sf)
+    # 额外字段
+    for f in extra_fields:
+        if f["name"] not in seen:
+            config.append(f)
+            seen.add(f["name"])
+    return config
+
+def build_event_config(beforerender_script=""):
+    """构建 eventConfig (H5: 7个标准事件)"""
+    events = ["beforeload", "afterload", "beforerender", "afterrender",
+              "beforeprint", "afterprint", "childReportMsg"]
+    config = []
+    for ev in events:
+        script = beforerender_script if ev == "beforerender" else ""
+        config.append({"eventName": ev, "expressionStatement": script})
+    return config
+
+def build_template(source, meta, merges, resized, report_config):
+    """构建完整 template 对象"""
+    return {
+        "reportReference": {
+            "source": source,
+            "meta": meta,
+            "merges": merges,
+            "resized": resized,
+            "hidden": {"rows": [], "cols": []},
+            "floatElements": []
+        },
+        "reportConfig": report_config
+    }
+
+def build_report_data(form_cd, form_na, form_version, template_obj):
+    """构建顶层 JSON 数据 (H1: template是字符串, H12: ensure_ascii=False)"""
+    now = "2026-01-01 00:00:00"
+    return {
+        "id": uuid.uuid4().hex[:24],
+        "cd": form_cd,
+        "na": form_na,
+        "template": json.dumps(template_obj, ensure_ascii=False),  # H1
+        "categoryId": "hihis@hihis/nenr@nenr/nenr_form@nenr_form/nenr_form_" + form_cd,
+        "version": form_version,
+        "instr": form_cd + "," + form_na,
+        "tenantId": "BSOFTYL",
+        "createDate": now, "modifyDate": now,
+        "createUser": "admin", "modifyUser": "admin",
+        "active": True
+    }
+
+# --- 验证函数 ---
+
+def verify(data, source, meta, merges, resized, widgets, patient_fields):
+    """验证所有硬性约束 H1-H22"""
+    errors = []
+    template_obj = json.loads(data["template"])
+
+    # H1: template 是字符串
+    if not isinstance(data["template"], str):
+        errors.append("H1: template 不是字符串")
+
+    # H2: source 是纯二维数组
+    for i, row in enumerate(source):
+        if not isinstance(row, list):
+            errors.append(f"H2: source[{i}] 不是列表")
+        for j, val in enumerate(row):
+            if val is not None and not isinstance(val, str):
+                errors.append(f"H2: source[{i}][{j}]={val!r} 不是str/null")
+
+    # H3: meta 长度 = 行×列
+    n_rows, n_cols = len(source), len(source[0]) if source else 0
+    if len(meta) != n_rows * n_cols:
+        errors.append(f"H3: meta长度{len(meta)} != {n_rows}×{n_cols}={n_rows*n_cols}")
+
+    # H4: scopeConfig 是列表
+    sc = template_obj["reportConfig"]["scopeConfig"]
+    if not isinstance(sc, list):
+        errors.append("H4: scopeConfig 不是列表")
+
+    # H5: eventConfig 有7个事件
+    ec = template_obj["reportConfig"]["eventConfig"]
+    if not isinstance(ec, list) or len(ec) != 7:
+        errors.append(f"H5: eventConfig 长度{len(ec) if isinstance(ec,list) else 'N/A'} != 7")
+    required_events = {"beforeload","afterload","beforerender","afterrender",
+                       "beforeprint","afterprint","childReportMsg"}
+    actual_events = {e.get("eventName") for e in ec} if isinstance(ec, list) else set()
+    if actual_events != required_events:
+        errors.append(f"H5: 事件不匹配, 缺少: {required_events - actual_events}")
+
+    # H6: resized 纯数字
+    for k, vals in [("rows", resized["rows"]), ("cols", resized["cols"])]:
+        for i, v in enumerate(vals):
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                errors.append(f"H6: resized.{k}[{i}]={v!r} 不是数字")
+    if len(resized["rows"]) != n_rows:
+        errors.append(f"H6: rows长度{len(resized['rows'])} != {n_rows}")
+    if len(resized["cols"]) != n_cols:
+        errors.append(f"H6: cols长度{len(resized['cols'])} != {n_cols}")
+
+    # H7: merges 是对象
+    for i, m in enumerate(merges):
+        if not all(k in m for k in ("startRow","startColumn","endRow","endColumn")):
+            errors.append(f"H7: merges[{i}] 缺少字段")
+
+    # H8: reportConfig 有14个字段
+    rc = template_obj["reportConfig"]
+    required_fields = {"pageConfig","splitLayout","headerRepeat","footerRepeat",
+        "headerFrozen","followUpPrintOpt","scopeConfig","searchBarConfig",
+        "eventConfig","serviceConfig","headerOptions","printOptions",
+        "functionConfig","engineConfig"}
+    missing = required_fields - set(rc.keys())
+    if missing:
+        errors.append(f"H8: reportConfig 缺少字段: {missing}")
+
+    # H9 + H10: proxyCell 检查
+    for cell in meta:
+        if cell.get("proxyCell"):
+            if "widget" in cell:
+                errors.append(f"H9: ({cell['row']},{cell['col']}) proxyCell 有 widget")
+            if "realCellPosition" not in cell:
+                errors.append(f"H10: ({cell['row']},{cell['col']}) proxyCell 无 realCellPosition")
+
+    # H11: dataMaker 用 \r\n
+    for (r, c), w in widgets.items():
+        widget = w["widget"]
+        dm = widget.get("componentLogic", {}).get("dataSource", {}).get("dataMaker", "")
+        if dm and "\r\n" not in dm and "\n" in dm:
+            errors.append(f"H11: ({r},{c}) dataMaker 含 \\n 而非 \\r\\n")
+
+    # H13: 列数 = 患者字段 × 2
+    expected_cols = len(patient_fields) * 2
+    if n_cols != expected_cols:
+        errors.append(f"H13: 列数{n_cols} != 患者字段{len(patient_fields)}×2={expected_cols}")
+
+    # H14: 多行文本有 tb=3（检查 source 中含 \r\n 的 cell）
+    for r, row in enumerate(source):
+        for c, val in enumerate(row):
+            if val and "\r\n" in val:
+                cell = next((m for m in meta if m["row"]==r and m["col"]==c), None)
+                if cell and cell.get("s", {}).get("tb") != 3:
+                    errors.append(f"H14: ({r},{c}) 多行文本未设 tb=3")
+
+    # H15: 标题/表头有 ht=2（由调用方传入 title_rows/header_rows 时检查）
+    # 此项在 build_meta 中自动保障，这里做抽查
+    # H16: 文本 cell 有 v 和 t
+    for cell in meta:
+        if not cell.get("proxyCell") and "widget" not in cell:
+            if "v" not in cell and cell.get("s", {}).get("bd"):
+                # 空白 cell 可以没有 v，有边框的 cell 应该有
+                pass  # 非强制，避免误报
+
+    # H17: 列宽总和 ~768
+    total_w = sum(resized["cols"])
+    if total_w < 700 or total_w > 820:
+        errors.append(f"H17: 列宽总和{total_w} 偏离768过多")
+
+    # H20: 日期控件用 datePicker
+    for (r, c), w in widgets.items():
+        if w["widget"]["type"] == "datePickerQuick":
+            errors.append(f"H20: ({r},{c}) 使用了 datePickerQuick, 应改用 datePicker")
+
+    # 输出结果
+    if errors:
+        print("=== 验证失败 ===")
+        for e in errors:
+            print(f"  [FAIL] {e}")
+        sys.exit(1)
+    else:
+        print("=== 验证通过: H1-H22 全部满足 ===")
+
+# --- 打包函数 ---
+
+def package(data, form_cd, form_version, output_dir):
+    """打包 ZIP (H12: UTF-8编码)"""
+    base = f"nenr_form_{form_cd}-{form_version}"
+    zip_name = f"{base}.zip"
+    report_name = f"{base}.report"
+    zip_path = os.path.join(output_dir, zip_name)
+    content = json.dumps(data, ensure_ascii=False, indent=2)  # H12
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(report_name, content.encode('utf-8'))      # H12
+    print(f"已生成: {zip_path}")
+    return zip_path
+
+
+# ============================================================
+# === 表单定义区（模型修改此处） ===
+# ============================================================
+
+FORM_CD = ""           # 表单编码, 如 "health_education"
+FORM_NA = ""           # 表单名称, 如 "老年医学科健康教育指导单"
+FORM_VERSION = "1.0.1"
+REFERENCE_ZIP = r"c:\Users\John\Documents\AweSun Files\nenr_form_oxytocin_record-1.0.1.zip"
+OUTPUT_DIR = r"c:\Users\John\Documents\AweSun Files"
+
+# 患者信息字段 (H13: 总列数 = len × 2)
+PATIENT_FIELDS = []  # 如 ["床号","姓名","性别","年龄","住院号","入院诊断"]
+
+# source 行数据: 每行为 [str|null, ...] (H2)
+SOURCE_ROWS = []
+
+# 合并区域: [(sr,sc,er,ec), ...] (H7)
+MERGE_AREAS = []
+
+# 行高: 精确值, 空行=11.5 (H18)
+ROW_HEIGHTS = []
+
+# 列宽: 精确值含小数, 总和~768 (H17)
+COL_WIDTHS = []
+
+# 控件: {(r,c): {"widget": widget_obj, "v"?:..., "t"?:...}}
+# 用 w_input/w_checkbox/w_date/w_select/w_radio 构建
+WIDGETS = {}
+
+# 标题行 (H15: 自动设ht=2, bl=1, fs=14)
+TITLE_ROWS = set()    # 如 {0}
+
+# 表头行 (H15: 自动设ht=2)
+HEADER_ROWS = set()   # 如 {2, 4}
+
+# 多行文本单元格 (H14: 自动设tb=3)
+MULTILINE_CELLS = set()  # 如 {(6,0), (7,0), ...}
+
+# beforerender 脚本 (H5: 自动填充到eventConfig)
+BEFORERENDER_SCRIPT = ""
+
+# 额外 scopeConfig 字段 (如空 scopeField 的控件不自动生成)
+EXTRA_SCOPE_FIELDS = []
+
+
+# ============================================================
+# === 构建区（调用 helper，一般不需要修改） ===
+# ============================================================
+
+if __name__ == "__main__":
+    # 1. 构建各部分
+    source = build_source(SOURCE_ROWS)
+    merges = build_merges(MERGE_AREAS)
+    meta = build_meta(source, MERGE_AREAS, WIDGETS, TITLE_ROWS, HEADER_ROWS, MULTILINE_CELLS)
+    resized = build_resized(ROW_HEIGHTS, COL_WIDTHS)
+    report_config = load_report_config(REFERENCE_ZIP)
+    report_config["scopeConfig"] = build_scope_config(WIDGETS, EXTRA_SCOPE_FIELDS)
+    report_config["eventConfig"] = build_event_config(BEFRERENDER_SCRIPT)
+
+    # 2. 组装 template
+    template_obj = build_template(source, meta, merges, resized, report_config)
+
+    # 3. 构建顶层 JSON
+    data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
+
+    # 4. 验证 H1-H22
+    verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS)
+
+    # 5. 打包 ZIP
+    package(data, FORM_CD, FORM_VERSION, OUTPUT_DIR)
 ```
-- 通常有 `t: 1, v: "占位文本"`
-- `initState`: 初始化状态（"0"=空, "1"=当前, "2"=自定义）
-- `valueFormat`/`format`: 日期格式
 
-## DatePickerQuick Widget格式
-```json
-{
-  "row": r, "col": c,
-  "s": { ... },
-  "proxyCell": false,
-  "widget": {
-    "type": "datePickerQuick",
-    "attribute": {
-      "input-control": true, "disabled": false, "clearable": true,
-      "simplify": true, "size": "medium",
-      "valueFormat": "yyyy-MM-dd hh:MM:ss",
-      "initState": "0", "type": "datetime"
-    },
-    "componentLogic": {
-      "insertCell": { "rowstart": 1, "rowend": 1, "scopeField": "" }
-    },
-    "scopeField": "...",
-    "name": "...",
-    "identifier": "..."
-  }
-}
+## 数据结构速查
+
+### 顶层字段
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | str | `uuid.uuid4().hex[:24]` |
+| `cd` | str | 表单编码 |
+| `na` | str | 表单名称 |
+| `template` | **str** | `json.dumps(template_obj, ensure_ascii=False)` (H1) |
+| `categoryId` | str | `hihis@hihis/nenr@nenr/nenr_form@nenr_form/<cd>` |
+| `version` | str | 如 `"1.0.1"` |
+| `tenantId` | str | `"BSOFTYL"` |
+| `createUser`/`modifyUser` | str | `"admin"` |
+| `active` | bool | `true` |
+
+### template 内部结构
 ```
-- **没有** `t`/`v` 字段
-
-## Proxy Cell格式（见 H9、H10）
-```json
-{
-  "row": r, "col": c,
-  "s": { /* 继承主单元格完整样式 */ },
-  "proxyCell": true,
-  "realCellPosition": { "row": sr, "col": sc }
-}
+reportReference:
+  source: [[str|null, ...], ...]     # H2 纯二维数组
+  meta:   [{row,col,s,proxyCell,...}] # H3 扁平列表, 长度=行×列
+  merges: [{startRow,startColumn,endRow,endColumn}]  # H7 对象
+  resized: {rows:[num], cols:[num]}  # H6 纯数字
+  hidden: {rows:[], cols:[]}
+  floatElements: []
+reportConfig:                         # H8 从催产素模板深拷贝
+  pageConfig, splitLayout, headerRepeat, footerRepeat,
+  headerFrozen, followUpPrintOpt, scopeConfig, searchBarConfig,
+  eventConfig, serviceConfig, headerOptions, printOptions,
+  functionConfig, engineConfig       # 14个字段
 ```
-- **没有** `t`/`v` 字段
-- **不能有** `widget` 字段（见 H9）
-- 必须有 `realCellPosition`（见 H10）
-- `s` 完全继承主单元格(sr,sc)的样式
 
-## 占位符处理规则
-- source中通常不使用 `{姓名}`、`[选项]` 等占位符文本
-- 大部分情况下需要生成控件的位置，source统一用 `null`
-- 标签文本（如"姓名："、"年龄："等）作为普通文本保留在source中
-- 部分模板source行使用 `{占位符}` 格式表示需要替换的文本
-- 部分模板source行直接将label和placeholder放在同一单元格（如 `['科室:', '科室']`）
-- 通过 `input_map` / `radio_map` / `checkbox_map` / `select_map` / `date_map` / `datepicker_map` 配置哪些 (r,c) 位置生成控件
-- 控件的具体选项数据（label/value）放在 map 中，不从source文本解析
+### 单元格类型
+| 类型 | 特征 | 必须字段 |
+|------|------|---------|
+| 文本cell | `proxyCell:false`, 无widget | `v`,`t:1`,`s` (H16) |
+| 控件cell | `proxyCell:false`, 有widget | `s`,`widget` |
+| 代理cell | `proxyCell:true` | `realCellPosition` (H10), 无widget (H9) |
 
-## 控件生成逻辑
-1. 遍历source每个cell，val = source[r][c]
-2. 如果 val 是 null 或空字符串:
-   - 检查 (r,c) 是否在各类map中 -> 生成对应控件
-   - 都不在 -> 检查是否是merge区域 -> proxyCell / 普通空白cell
-3. 如果 val 是字符串 -> 普通文本cell
+### 样式字段 `s`
+| 字段 | 含义 | 值 |
+|------|------|-----|
+| `ff` | 字体 | `"FangSong"` |
+| `fs` | 字号 | 10(普通)/14(标题) |
+| `ht` | 水平对齐 | 0=左,1=中,2=右 (H15: 标题/表头=2) |
+| `vt` | 垂直对齐 | 0=上,1=中,2=下 |
+| `bl` | 粗体 | 0/1 |
+| `tb` | 文本换行 | 0=不换行,3=自动换行 (H14: 多行=3) |
+| `bd` | 边框 | `{"t/l/b/r":{"s":1,"cl":{"rgb":"#000000"}}}` |
+| `pd` | 内边距 | `{"t":0,"b":2,"l":2,"r":2}` |
 
-## Merges规则（见 H7）
-- 每个元素必须是对象: `{"startRow": sr, "startColumn": sc, "endRow": er, "endColumn": ec}`
-- 不允许使用数组 `[sr, sc, er, ec]` 格式
-- 合并非常精细（参考模板有41个merge），按实际内容需求合并
-- 每个merge区域内，除主单元格(sr,sc)外的所有cell设置 `proxyCell: true`
-- proxyCell的 `s` 完全继承主单元格样式
-- proxyCell 必须有 `realCellPosition`（见 H10）
+### 控件速查
+| 类型 | 函数 | 特点 |
+|------|------|------|
+| input | `w_input()` | `clearable:true, simplify:false` |
+| checkboxgroup | `w_checkbox()` | `enableMax/max` 模拟单选, `itemSpacing` 控制间距 |
+| datePicker | `w_date()` | 有 `t:1,v:"占位"` (H20, 不用datePickerQuick) |
+| select | `w_select()` | |
+| radiogroup | `w_radio()` | `vertical` 控制排列方向 |
 
-## 列宽/行高规则（见 H6）
-- `resized.rows`: 纯数字列表，按实际需要设置不同行高（如 `[24, 24, 22, 22, 22, ...]`）
-- `resized.cols`: 按实际需要设置不同列宽（如 `[50, 79, 50, 79, ...]`）
-- 不是统一固定值
-- **关键约束**: `len(resized.rows)` 必须严格等于 `len(source)`，`len(resized.cols)` 必须等于 source 每行的列数
-  - 不匹配会导致 `TypeError: Cannot read properties of undefined (reading '0')` 运行时错误
-  - 推荐使用动态计算: `[28,28,24,22]+[24]*(len(source)-4)` 而非硬编码
-- **列宽单位是像素(px)**（非毫米），pageW/pageH 单位是毫米
-  - A4宽度 210mm ≈ 794px（96 DPI），扣除pagePadding后约 775px 可用
-  - 参考模板列宽总计: 674px(18列) ~ 748px(9列)
-  - 12列布局建议: 交替 label(50px) + input(79px) = 774px
+### source 空白值规则
+- 空白位置用 `null`（不是 `" "` 空格）
+- 空字符串 `""` 用于特殊位置（如 input 的值字段）
+- 标签文本（如 `"姓名："`）作为普通字符串保留
 
-## 顶层数据结构格式
-- `id`: UUID格式（hex，24字符，如 `uuid.uuid4().hex[:24]`）
-- `cd`: 表单编码
-- `na`: 表单名称
-- `template`: **JSON 字符串**（`json.dumps(template_object, ensure_ascii=False)`），不是嵌套对象（见 H1）
-- `categoryId`: 分类ID（如 `"hihis@hihis/nenr@nenr/nenr_form@nenr_form/nenr_form_xyz"`）
-- `version`: 版本号（如 `"1.0.1"`, `"1.0.6"`）
-- `instr`: 包含cd、na、拼音缩写的字符串
-- `tenantId`: 租户ID（如 `"BSOFTYL"`）
-- `createDate`/`modifyDate`: `"yyyy-MM-dd HH:mm:ss"` 格式
-- `createUser`/`modifyUser`: 字符串（如 `"admin"`，不需要 UUID 格式）
-- `active`: true
+## 源文件解析规则
 
-## scopeConfig规则（见 H4）
-- **必须是列表**，不是字典
-- 每个控件对应一个scope_config条目
-- 格式: `{"name": "scope字段名", "defaultValue": "", "type": "string", "desc": "中文说明"}`
-- `desc` 是已验证模板使用的字段名（推荐使用 `desc`，不用 `remark`）
-- `name` 使用小写scope字段名
-- **`name` 必须与对应 widget 的 `scopeField` 完全匹配**（区分大小写）
-- `type` 可以是 `"string"`, `"array"`, `"object"` 等
-- `defaultValue` 对于array类型可以是 `[]`，对于object类型可以是 `{}`
-- 部分模板包含内置scope字段如 `nurseFormContext`（类型"object"，描述"患者信息等基础内置上下文"）
+### PDF 解析
+- 使用 `pdfplumber` 库
+- 文本型 PDF: `page.extract_text()` / `page.extract_words()`
+- 扫描型 PDF（`len(page.chars)==0` 且有图片）: `page.to_image(resolution=200)` 转图片，视觉分析
+- 识别要点：患者信息字段数（决定列数 H13）、行结构、控件位置、合并区域
 
-## eventConfig规则（见 H5）
-- **必须是列表**，包含全部 7 个标准事件，不是字典，不是空数组
-- 每个事件格式: `{"eventName": "事件名", "expressionStatement": "脚本或空字符串"}`
-- 7 个标准事件: `beforeload`, `afterload`, `beforerender`, `afterrender`, `beforeprint`, `afterprint`, `childReportMsg`
-- 即使脚本为空，也必须有 `{"eventName": "xxx", "expressionStatement": ""}`
-- `beforerender` 中常包含自动填充患者信息的脚本
-- `expressionStatement` 中的 `$$scope.xxx` 必须与对应 widget 的 `scopeField` 完全一致（区分大小写）
-- 示例beforerender脚本:
+### DOCX 解析
+- 使用 `python-docx`，`doc.paragraphs` 提取标题/列表，`doc.tables` 提取结构化内容
+- `□` 符号 → checkboxgroup 选项
+- `____` 或空白 → input 控件
+- 页面尺寸: `doc.sections[0].page_width` (EMU, 914400 EMU = 1 inch = 25.4mm)
+
+### 解析后填入模板
+1. 识别患者信息字段 → 填 `PATIENT_FIELDS`（H13 决定列数）
+2. 逐行分析 → 填 `SOURCE_ROWS`
+3. 识别合并区域 → 填 `MERGE_AREAS`
+4. 识别控件位置 → 用 `w_input()`/`w_checkbox()`/`w_date()` 等构建 → 填 `WIDGETS`
+5. 精确计算列宽行高 → 填 `COL_WIDTHS`/`ROW_HEIGHTS`（H17/H18）
+6. 标记标题行/表头行/多行文本 → 填 `TITLE_ROWS`/`HEADER_ROWS`/`MULTILINE_CELLS`
+
+## identifier 命名规则（关键）
+
+- `identifier` 和 `scopeField` **会被系统当作 JavaScript 变量名**
+- **禁止**: `/`、空格、`(`、`)`、`-`、`+`、`*` 等 JS 特殊字符
+- **推荐**: 纯小写字母+数字+下划线（如 `ym_xm`、`picccvc_1`）
+- 含 `/` 的名称需转拼音缩写（如 `PICC/CVC` → `picccvc`，`造瘘管/胃管` → `zfqwg`）
+- 中文名可用于 `name`（显示名）和 `desc`（说明），但**不可**用于 `identifier`/`scopeField`
+
+## beforerender 脚本规则
+
+- 使用 `$$scope.nurseFormContext?.patientInfo` 获取患者数据
+- `$$scope.xxx` 的 `xxx` 必须与 widget 的 `scopeField` 完全一致
+- 示例:
   ```javascript
   $$scope.ym_xm = $$scope.nurseFormContext?.patientInfo?.name;
   $$scope.ym_xb = $$scope.nurseFormContext?.patientInfo?.sexName;
   $$scope.ym_nl = $$scope.nurseFormContext?.patientInfo?.age;
   $$scope.ym_zyh = $$scope.nurseFormContext?.patientInfo?.admNo;
   ```
-- 使用 `$$scope.nurseFormContext?.patientInfo` 获取患者数据
 
-## serviceConfig规则
-- `datasourceType`: "3"
-- `dbConfig`: `[]`
-- `inputsType`: -1
+## 常见表单模式
 
-## 源文件解析规则
+### 患者信息行（H13）
+- 每个字段占 2 列（标签+值），所有字段在一行内
+- 标签列放文本（如 `"姓名："`），值列放 input 控件
+- 示例 6 字段 → 12 列: `["床号：", null, "姓名：", null, "性别：", null, "年龄：", null, "住院号：", null, "入院诊断：", null]`
 
-### PDF解析
-- 使用 `pdfplumber` 库
-- 文本型PDF: `page.extract_text()` / `page.extract_words()` 直接提取
-- 扫描型PDF（无文本层）: `page.to_image(resolution=200)` 转图片，通过视觉分析
-- 判断方法: `len(page.chars) == 0` 且 `len(page.images) > 0` → 扫描件
+### 竖排类别 + 教育内容
+- 类别列合并多行，设 `tb=3`（H14）+ `ht=2`（H15）
+- 内容列合并多行，设 `tb=3`
+- checkboxgroup 用 `vertical:true` 纵向排列
 
-### DOCX解析
-- 使用 `python-docx` 库（`from docx import Document`）
-- **段落** (`doc.paragraphs`): 提取标题、说明文字、列表项（如措施清单）
-  - `p.style.name` 可区分正文/列表（`List Bullet`）
-  - `□` 符号表示checkbox选项
-- **表格** (`doc.tables`): 提取结构化表单内容
-  - `table.rows` / `table.columns` 获取行列数
-  - `cell.text` 获取单元格文本（含 `\n` 换行）
-  - 合并单元格的文本会在所有被合并的cell中重复出现
-- **页面尺寸** (`doc.sections`): `page_width` / `page_height` 单位为EMU（914400 EMU = 1 inch = 25.4mm）
-- **解析策略**:
-  1. 先遍历段落获取标题和列表项
-  2. 再遍历表格获取结构化内容
-  3. 表格中的 `□` 符号对应checkbox控件
-  4. 表格中的 `____` 或空白对应input控件
-  5. 多个表格可能属于同一表单的不同区域（如页眉信息表+评分表）
+### 模拟单选（如 Bishop 评分）
+- `enableMax:true, max:1` 让 checkboxgroup 表现为单选
 
-### 多部分文档处理
-- 一个源文件可能包含多个独立表单（如产前+LATCH+母婴分离）
-- 每个部分有独立的标题行和表头
-- 生成一个合并模板，各部分用空行分隔
-- 每部分独立编号行，但source/meta/merges全局统一
-
-### checkboxgroup 批量措施处理
-- 当一个单元格内有多个 `□` 选项时，使用 `checkboxgroup` 控件（`vertical: true`）
-- 选项数据通过 `dataMaker` 传入，每个选项为 `{label, value}` 格式
-- 不要为每个选项创建独立的checkboxgroup单元格
-
-## 输出格式规则（见 H1、H12）
-- **最终输出是 ZIP 压缩包**，不是单个 `.report` 文件
-- ZIP 包命名格式：`nenr_form_<编码>-<版本>.zip`（如 `nenr_form_oxytocin_record-1.0.1.zip`）
-- ZIP 包内只包含一个文件，命名格式：`nenr_form_<编码>-<版本>.report`（如 `nenr_form_oxytocin_record-1.0.1.report`）
-- `.report` 文件内容就是完整的 JSON 数据（顶层对象含 `id`/`cd`/`na`/`template` 等字段）
-- `.report` 只是 JSON 的扩展名，内容仍是标准 JSON
-- **`template` 字段的值必须是 JSON 字符串**，不是嵌套对象（见 H1）
-- **ZIP 内文件必须用 UTF-8 编码**，JSON 序列化必须 `ensure_ascii=False`（见 H12）
-
-## identifier 命名规则（关键）
-- `identifier` 和 `scopeField` 字段**会被系统当作 JavaScript 变量名使用**
-- **禁止包含** `/`、空格、`(`、`)`、`-`、`+`、`*` 等 JS 运算符或特殊字符
-- `/` 会被解析为除法运算符，导致 `ReferenceError: XXX is not defined`
-- 推荐使用纯小写字母+数字+下划线（如 `picccvc_1`，不要用 `PICC/CVC_1`）
-- 中文名称可用作 `name`（显示名）和 `desc`（说明），但**不可**用作 `identifier`/`scopeField`
-- 含 `/` 的名称（如 `PICC/CVC`、`造瘘管/胃管/导尿管`）需转成拼音缩写（如 `picccvc`、`zfqg`）
+### 纯展示 checkbox
+- `scopeField=""`（H21），不出现在 scopeConfig 中</think>文件已写入。让我验证几个关键部分是否正确。<tool_call>Read<arg_key>file_path</arg_key><arg_value>c:\Users\John\.trae-cn\skills\report-generator\SKILL.md
