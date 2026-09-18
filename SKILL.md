@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.0
+# Report Generator Skill - v8.1
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H22
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H23
 5. **打包 ZIP** → 输出 `nenr_form_<编码>-<版本>.zip`
 
-## 硬性约束（H1-H22，违反即报错或显示异常）
+## 硬性约束（H1-H23，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -50,9 +50,13 @@ description: "智能护理表单模板生成器"
 - **H21**: 纯展示性 checkbox（如"已指导"标记）`scopeField` 必须为空字符串 `""`
 - **H22**: checkboxgroup 当选项 ≥ 3 个时应设置 `itemSpacing` 控制间距（推荐值 30）
 
+### 布局类 H23（页面结构）
+
+- **H23**: 第一行（R0）必须是空行，且必须合并跨所有列。R0 不含任何控件，用于系统页眉区域。R0C0 可以放 `{医疗机构名称}` 占位符文本（如有则需 input widget），或全为 `null`
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H22。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H23。
 
 ```python
 #!/usr/bin/env python3
@@ -104,8 +108,8 @@ def _datamaker(options):
 # --- 控件构建函数 ---
 
 def w_input(scope_field, identifier, name, placeholder="", readonly=False,
-            clearable=True, simplify=False, rowstart=1, rowend=1):
-    """构建 input 控件"""
+            clearable=True, simplify=True, rowstart=1, rowend=1):
+    """构建 input 控件 (simplify=True 为默认, readonly 时 clearable=False)"""
     return {"type": "input", "attribute": {
         "clearable": clearable, "simplify": simplify, "size": "small",
         "placeholder": placeholder, "maxlength": 40,
@@ -233,14 +237,12 @@ def load_report_config(reference_zip_path):
     return copy.deepcopy(ref_template['reportConfig'])
 
 def build_scope_config(widgets, extra_fields=None):
-    """构建 scopeConfig (H4: 列表, name匹配scopeField)"""
+    """构建 scopeConfig (H4: 列表, name匹配scopeField)
+    注意: nurseFormContext 不自动添加, 仅在 beforerender 脚本使用时通过 extra_fields 传入
+    """
     seen = set()
     config = []
     extra_fields = extra_fields or []
-    # 内置字段
-    config.append({"name": "nurseFormContext", "defaultValue": {},
-                    "type": "object", "desc": "患者信息等基础内置上下文"})
-    seen.add("nurseFormContext")
     # 控件字段（跳过空scopeField）
     for (r, c), w in sorted(widgets.items()):
         sf = w["widget"].get("scopeField", "")
@@ -250,7 +252,7 @@ def build_scope_config(widgets, extra_fields=None):
             config.append({"name": sf, "defaultValue": [] if dtype == "array" else "",
                            "type": dtype, "desc": w["widget"].get("name", "")})
             seen.add(sf)
-    # 额外字段
+    # 额外字段 (如 nurseFormContext, 仅 beforerender 使用时传入)
     for f in extra_fields:
         if f["name"] not in seen:
             config.append(f)
@@ -289,7 +291,7 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
         "cd": form_cd,
         "na": form_na,
         "template": json.dumps(template_obj, ensure_ascii=False),  # H1
-        "categoryId": "hihis@hihis/nenr@nenr/nenr_form@nenr_form/nenr_form_" + form_cd,
+        "categoryId": "",  # 空字符串, 系统导入后自动生成
         "version": form_version,
         "instr": form_cd + "," + form_na,
         "tenantId": "BSOFTYL",
@@ -416,7 +418,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H22 全部满足 ===")
+        print("=== 验证通过: H1-H23 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -514,7 +516,7 @@ if __name__ == "__main__":
 | `cd` | str | 表单编码 |
 | `na` | str | 表单名称 |
 | `template` | **str** | `json.dumps(template_obj, ensure_ascii=False)` (H1) |
-| `categoryId` | str | `hihis@hihis/nenr@nenr/nenr_form@nenr_form/<cd>` |
+| `categoryId` | str | `""` (空字符串, 系统导入后自动生成) |
 | `version` | str | 如 `"1.0.1"` |
 | `tenantId` | str | `"BSOFTYL"` |
 | `createUser`/`modifyUser` | str | `"admin"` |
@@ -535,6 +537,58 @@ reportConfig:                         # H8 从催产素模板深拷贝
   eventConfig, serviceConfig, headerOptions, printOptions,
   functionConfig, engineConfig       # 14个字段
 ```
+
+### reportConfig 标准字段值（从催产素模板深拷贝，不修改）
+| 字段 | 类型 | 标准值 |
+|------|------|--------|
+| `pageConfig` | dict(24) | 见下表 |
+| `splitLayout` | bool | `False` |
+| `headerRepeat` | bool | `False` |
+| `footerRepeat` | bool | `False` |
+| `headerFrozen` | bool | `False` |
+| `followUpPrintOpt` | bool | `False` |
+| `scopeConfig` | list | **替换**为当前表单的 |
+| `searchBarConfig` | dict(2) | `{"form": {}, "formDesc": {...}}` |
+| `eventConfig` | list(7) | **替换**为当前表单的 |
+| `serviceConfig` | dict(3) | `{"datasourceType": "3", "dbConfig": [], "inputsType": -1}` |
+| `headerOptions` | dict(7) | `{"print":True, "showPrintConf":True, "printCurrent":True, "pdf":True, "excel":True, "pagination":True, "show":False}` |
+| `printOptions` | dict(9) | `{"printName":"", "duplex":"simplex", "pageState":"", "page":"", "printMode":"server", "printFormat":"html", "pl":"portrait", "mostOnePrint":100, "printType":"electron"}` |
+| `functionConfig` | dict | `{}` (空) |
+| `engineConfig` | dict | `{}` (空) |
+
+### pageConfig 标准值（24个字段，全部报表一致）
+| 字段 | 标准值 | 说明 |
+|------|--------|------|
+| `direction` | `"vertical"` | 打印方向 |
+| `pagePadding` | `{"top":0, "left":5, "bottom":0, "right":0}` | 页边距(mm) |
+| `pageHeader` | `4` | 页眉类型 |
+| `pageFooter` | `0` | 页脚类型 |
+| `pageW` | `210` | A4 宽度(mm) |
+| `pageH` | `297` | A4 高度(mm) |
+| `unit` | `"millimeter"` | 单位 |
+| `pagingOrder` | `"columnRow"` | 分页顺序 |
+| `previewAlign` | `"center"` | 预览对齐 |
+| `horizontalCenter` | `False` | 水平居中 |
+| `verticalCenter` | `False` | 垂直居中 |
+| `startPageNumber` | `1` | 起始页码 |
+| `autoAdjust` | `"rowHeight"` | 自动调整 |
+| `pageHeaderConfig` | list(5) | 页眉配置(5种页类型) |
+| `pageFooterConfig` | `[]` | 页脚配置(空) |
+| `pageSizeValue` | `"210x297"` | 纸张尺寸 |
+| `pageSizeConf` | `"predefine"` | 预定义纸张 |
+| `printMode` | `"server"` | 打印模式 |
+| `printFormat` | `"html"` | 打印格式 |
+| `bbPlaceholder` | `True` | 占位符 |
+| `needFillByRow` | `False` | 按行填充 |
+| `fillBy` | `0` | 填充方式 |
+| `withPageSize` | `True` | 带纸张尺寸 |
+| `autoLineHeightType` | `"1"` | 自动行高类型 |
+
+### scopeConfig type 字段
+- 只有两种值: `"string"` (input/datePicker/select/radiogroup) 和 `"array"` (checkboxgroup)
+- `"string"` 的 `defaultValue` 为 `""`
+- `"array"` 的 `defaultValue` 为 `[]`
+- **不需要** `"object"` 类型（`nurseFormContext` 仅在 beforerender 脚本中使用，不放入 scopeConfig）
 
 ### 单元格类型
 | 类型 | 特征 | 必须字段 |
@@ -558,7 +612,7 @@ reportConfig:                         # H8 从催产素模板深拷贝
 ### 控件速查
 | 类型 | 函数 | 特点 |
 |------|------|------|
-| input | `w_input()` | `clearable:true, simplify:false` |
+| input | `w_input()` | `simplify:true` (默认), `clearable` 因报表而异, readonly 时 `clearable:false` |
 | checkboxgroup | `w_checkbox()` | `enableMax/max` 模拟单选, `itemSpacing` 控制间距 |
 | datePicker | `w_date()` | 有 `t:1,v:"占位"` (H20, 不用datePickerQuick) |
 | select | `w_select()` | |
@@ -603,6 +657,8 @@ reportConfig:                         # H8 从催产素模板深拷贝
 
 - 使用 `$$scope.nurseFormContext?.patientInfo` 获取患者数据
 - `$$scope.xxx` 的 `xxx` 必须与 widget 的 `scopeField` 完全一致
+- **`nurseFormContext` 不放入 scopeConfig**，它是系统内置变量，直接在脚本中引用即可
+- 仅当表单有需要自动填充的患者信息字段时才需要写 beforerender 脚本（无自动填充则留空）
 - 示例:
   ```javascript
   $$scope.ym_xm = $$scope.nurseFormContext?.patientInfo?.name;
@@ -612,6 +668,23 @@ reportConfig:                         # H8 从催产素模板深拷贝
   ```
 
 ## 常见表单模式
+
+### R0 空行（H23）
+- 所有报表的 R0 都是空行，合并跨所有列
+- R0C0 可放 `{医疗机构名称}` 占位符文本 + input widget（`scopeField=""`）
+- 也可全为 `null`（纯空行，无内容）
+- R0 行高通常 22px
+- 示例:
+  ```python
+  # 方式1: 有医疗机构名称
+  SOURCE_ROWS[0] = ["[医疗机构名称]"] + [None] * (n_cols - 1)
+  MERGE_AREAS.append((0, 0, 0, n_cols - 1))
+  WIDGETS[(0, 0)] = {"widget": w_input("", "ry_jgmc", "医疗机构名称")}
+
+  # 方式2: 纯空行
+  SOURCE_ROWS[0] = [None] * n_cols
+  MERGE_AREAS.append((0, 0, 0, n_cols - 1))
+  ```
 
 ### 患者信息行（H13）
 - 每个字段占 2 列（标签+值），所有字段在一行内
