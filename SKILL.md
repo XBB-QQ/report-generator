@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.3
+# Report Generator Skill - v8.4
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H24
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H26
 5. **打包 ZIP** → 输出 `nenr_form_<编码>-<版本>.zip`
 
-## 硬性约束（H1-H24，违反即报错或显示异常）
+## 硬性约束（H1-H26，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -68,16 +68,32 @@ description: "智能护理表单模板生成器"
   - 计算控件本身是只读 input/select，`attribute.readonly` 或 `attribute.clearable: false`
   - 支持链式计算：A 算总分 → B 依赖 A 的结果算等级
 
+### 交互类 H25-H26（固定配置）
+
+- **H25**: 需要弹出表单项的 input 控件（如"护士签名"），必须在 `componentLogic.events` 中添加两个固定事件：
+  - 焦点事件：`{"id": "<random>", "name": "获得焦点", "type": "focus", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"}`
+  - 双击事件：`{"id": "<random>", "name": "双击", "type": "dblclick.native", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });"}`
+  - `id` 使用随机6位字符串（如 `"QBaY9r"`），每个事件的 id 不同
+  - 这两个事件触发系统弹出表单项弹窗，focus 为单击触发（triggerType 默认），dblclick 为双击触发（triggerType='2'）
+
+- **H26**: 需要条件显示的单元格（如签名图片展示），必须在 cell 上添加 `conditionAttribute` 数组：
+  - 结构：`[{"id": "<random>", "attributeActiveInfo": [...], "expressionStatement": "<脚本>", "str": "", "isEditable": false, "name": "条件属性1"}]`
+  - `attributeActiveInfo` 声明影响的属性：
+    - 背景：`{"name": "背景", "symbol": "bgColor", "value": {"dataType": "color", "data": "#ffffff"}, "cellRange": "cell"}`
+    - 内容显隐：`{"name": "内容显隐", "symbol": "contentVisibility", "value": true}`
+  - `expressionStatement` 为条件计算脚本，通过 `$$meta?.widget?.scopeField` 获取当前控件字段名，`$$scope[scopeField]` 获取值，`return { bgColor, contentVisibility }` 返回结果
+  - 典型场景：scopeField 值含 `/` 时视为图片路径，隐藏内容并将图片设为背景；否则正常显示文本
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H24。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H26。
 
 ```python
 #!/usr/bin/env python3
 """
 护理表单报表生成器模板 v8.0
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H22 由 helper 函数自动保障。
+所有硬性约束 H1-H26 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -229,6 +245,75 @@ def w_calc_select(scope_field, identifier, name, options, dependencies, calc_scr
         "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
     }, "scopeField": scope_field, "identifier": identifier, "name": name}
 
+# --- 签名控件函数 (H25: 弹出表单项事件) ---
+
+def _rand_id(n=6):
+    """生成随机ID (字母+数字)"""
+    import random, string
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choices(chars, k=n))
+
+def w_signature(scope_field, identifier, name, rowstart=1, rowend=1):
+    """
+    构建护士签名 input 控件 (H25: focus+dblclick 事件)
+    自动添加 beeReportBridge 事件, 单击/双击弹出表单项
+    """
+    focus_id = _rand_id()
+    dblclick_id = _rand_id()
+    return {"type": "input", "attribute": {
+        "clearable": True, "simplify": True, "size": "small",
+        "placeholder": "", "maxlength": 40,
+        "type": "input", "readonly": False
+    }, "componentLogic": {
+        "events": [
+            {"id": focus_id, "name": "获得焦点", "type": "focus",
+             "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"},
+            {"id": dblclick_id, "name": "双击", "type": "dblclick.native",
+             "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });"}
+        ],
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+# --- 条件属性函数 (H26: 单元格条件显示) ---
+
+_CONDITION_ATTR_SCRIPT = """let contentVisibility = true;\r
+let bgColor = {\r
+    dataType: 'image',\r
+    data: { url: '', mode: 'auto' }\r
+};\r
+const scopeField = $$meta?.widget?.scopeField;\r
+if (scopeField) {\r
+    const value = $$scope[scopeField];\r
+    if (value?.includes('/')) {\r
+        contentVisibility = false;\r
+        bgColor.data.url = value;\r
+    } else {\r
+        bgColor.data.url = '';\r
+        contentVisibility = true;\r
+    }\r
+}\r
+return { bgColor, contentVisibility };"""
+
+def condition_attribute():
+    """
+    构建条件属性对象 (H26: 背景图+内容显隐)
+    添加到 cell 的 conditionAttribute 字段
+    当 scopeField 值含 '/' 时, 隐藏内容并显示背景图
+    """
+    return [{
+        "id": _rand_id(),
+        "attributeActiveInfo": [
+            {"name": "背景", "symbol": "bgColor",
+             "value": {"dataType": "color", "data": "#ffffff"},
+             "cellRange": "cell"},
+            {"name": "内容显隐", "symbol": "contentVisibility", "value": True}
+        ],
+        "expressionStatement": _CONDITION_ATTR_SCRIPT,
+        "str": "",
+        "isEditable": False,
+        "name": "条件属性1"
+    }]
+
 # --- 数据构建函数 ---
 
 def build_source(rows_def):
@@ -275,6 +360,7 @@ def build_meta(source, merge_list, widgets, title_rows, header_rows, multiline_c
                 cell["s"] = w.get("s") or _style(ht=ht, tb=tb)
                 if "v" in w: cell["v"] = w["v"]
                 if "t" in w: cell["t"] = w["t"]
+                if "conditionAttribute" in w: cell["conditionAttribute"] = w["conditionAttribute"]
                 meta.append(cell)
             else:
                 val = source[r][c] if c < len(source[r]) else None
@@ -499,6 +585,29 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
                 if "\r\n" not in code and "\n" in code:
                     errors.append(f"H24: ({r},{c}) action 脚本含 \\n 而非 \\r\\n")
 
+    # H25: 签名控件事件检查
+    for (r, c), w in widgets.items():
+        widget = w["widget"]
+        cl = widget.get("componentLogic", {})
+        events = cl.get("events")
+        if events:
+            focus_found = any(e.get("type") == "focus" and "beeReportBridge" in e.get("handler", "") for e in events)
+            dblclick_found = any(e.get("type") == "dblclick.native" and "beeReportBridge" in e.get("handler", "") for e in events)
+            if not focus_found:
+                errors.append(f"H25: ({r},{c}) events 缺少 focus 事件")
+            if not dblclick_found:
+                errors.append(f"H25: ({r},{c}) events 缺少 dblclick.native 事件")
+
+    # H26: conditionAttribute 结构检查
+    for cell in meta:
+        ca = cell.get("conditionAttribute")
+        if ca:
+            for attr in ca:
+                if "expressionStatement" not in attr:
+                    errors.append(f"H26: ({cell['row']},{cell['col']}) conditionAttribute 缺少 expressionStatement")
+                if "attributeActiveInfo" not in attr:
+                    errors.append(f"H26: ({cell['row']},{cell['col']}) conditionAttribute 缺少 attributeActiveInfo")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -506,7 +615,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H24 全部满足 ===")
+        print("=== 验证通过: H1-H26 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -708,6 +817,8 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | radiogroup | `w_radio()` | `vertical` 控制排列方向 |
 | 计算input | `w_calc_input()` | 只读, `interaction.actionConfig` 自动计算 (H24) |
 | 计算select | `w_calc_select()` | 只读, `interaction.actionConfig` 按阈值分级 (H24) |
+| 护士签名 | `w_signature()` | `events` 含 focus+dblclick 弹出表单项 (H25) |
+| 条件属性 | `condition_attribute()` | 添加到 cell, `conditionAttribute` 背景图+内容显隐 (H26) |
 
 ### source 空白值规则
 - 空白位置用 `null`（不是 `" "` 空格）
@@ -869,4 +980,39 @@ WIDGETS[(6, 11)] = {"widget": w_calc_select(
 **计分映射规则**：
 - `type: 'direct'`：checkboxgroup 的 value 本身就是分数（如 `"3"` → 3 分），直接 `parseInt`
 - `type: 'map'`：checkboxgroup 的 value 是选项序号（如 `"0"/"1"/"2"`），通过 map 映射到实际分数（如 `{'0': 2, '1': 2, '2': 4}`）
-- 映射规则取决于 checkboxgroup 的 dataMaker 中 value 的定义方式</think>文件已写入。让我验证几个关键部分是否正确。<tool_call>Read<arg_key>file_path</arg_key><arg_value>c:\Users\John\.trae-cn\skills\report-generator\SKILL.md
+- 映射规则取决于 checkboxgroup 的 dataMaker 中 value 的定义方式
+
+### 护士签名控件模式（H25: 弹出表单项事件）
+
+需要弹出表单项弹窗的 input 控件（如"护士签名"），使用 `w_signature()` 替代 `w_input()`：
+
+```python
+# 护士签名 (H25: 单击/双击弹出表单项)
+WIDGETS[(5, 1)] = {"widget": w_signature("common_hsqm", "LgVG", "通用_护士签名")}
+
+# 多个签名字段
+WIDGETS[(21, 1)] = {"widget": w_signature("common_jsz", "jsz01", "接生者")}
+WIDGETS[(21, 7)] = {"widget": w_signature("common_tbz", "tbz01", "填表者")}
+```
+
+`w_signature()` 自动在 `componentLogic.events` 中添加：
+- `focus` 事件：`$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });`（单击触发）
+- `dblclick.native` 事件：`$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });`（双击触发）
+
+### 条件属性模式（H26: 单元格背景图+内容显隐）
+
+需要根据 scopeField 值动态切换显示的单元格（如签名图片展示），添加 `condition_attribute()`：
+
+```python
+# 签名单元格: scopeField 值含 '/' 时显示图片, 否则显示文本
+WIDGETS[(5, 1)] = {
+    "widget": w_signature("common_hsqm", "LgVG", "通用_护士签名"),
+    "conditionAttribute": condition_attribute()  # H26
+}
+```
+
+`condition_attribute()` 返回一个条件属性对象，包含：
+- `attributeActiveInfo`：声明影响 `bgColor`（背景）和 `contentVisibility`（内容显隐）
+- `expressionStatement`：通过 `$$meta?.widget?.scopeField` 获取当前字段名，`$$scope[scopeField]` 获取值
+  - 值含 `/` → `contentVisibility=false, bgColor.data.url=value`（显示图片）
+  - 值不含 `/` → `contentVisibility=true, bgColor.data.url=''`（显示文本）</think>文件已写入。让我验证几个关键部分是否正确。<tool_call>Read<arg_key>file_path</arg_key><arg_value>c:\Users\John\.trae-cn\skills\report-generator\SKILL.md
