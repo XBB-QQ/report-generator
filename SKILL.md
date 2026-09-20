@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.2
+# Report Generator Skill - v8.3
 
 ## 使用流程
 
@@ -302,7 +302,7 @@ def load_report_config(reference_zip_path):
 
 def build_scope_config(widgets, extra_fields=None):
     """构建 scopeConfig (H4: 列表, name匹配scopeField)
-    注意: nurseFormContext 不自动添加, 仅在 beforerender 脚本使用时通过 extra_fields 传入
+    自动添加 nurseFormContext (type=object, defaultValue={})
     """
     seen = set()
     config = []
@@ -316,11 +316,17 @@ def build_scope_config(widgets, extra_fields=None):
             config.append({"name": sf, "defaultValue": [] if dtype == "array" else "",
                            "type": dtype, "desc": w["widget"].get("name", "")})
             seen.add(sf)
-    # 额外字段 (如 nurseFormContext, 仅 beforerender 使用时传入)
+    # 额外字段
     for f in extra_fields:
         if f["name"] not in seen:
             config.append(f)
             seen.add(f["name"])
+    # nurseFormContext (系统内置变量, 必须加入)
+    if "nurseFormContext" not in seen:
+        config.append({"name": "nurseFormContext",
+                       "desc": "患者信息等基础内置上下文",
+                       "type": "object", "defaultValue": {}})
+        seen.add("nurseFormContext")
     return config
 
 def build_event_config(beforerender_script=""):
@@ -667,10 +673,11 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | `autoLineHeightType` | `"1"` | 自动行高类型 |
 
 ### scopeConfig type 字段
-- 只有两种值: `"string"` (input/datePicker/select/radiogroup) 和 `"array"` (checkboxgroup)
-- `"string"` 的 `defaultValue` 为 `""`
+- 三种值: `"string"` (input/datePicker/select/radiogroup), `"array"` (checkboxgroup), `"object"` (nurseFormContext)
+- `"string"` 的 `defaultValue` 为 `""`（可省略）
 - `"array"` 的 `defaultValue` 为 `[]`
-- **不需要** `"object"` 类型（`nurseFormContext` 仅在 beforerender 脚本中使用，不放入 scopeConfig）
+- `"object"` 的 `defaultValue` 为 `{}`
+- **`nurseFormContext` 必须放入 scopeConfig**，`type: "object"`, `defaultValue: {}`, `desc: "患者信息等基础内置上下文"`（系统内置变量，beforerender 脚本通过 `$$scope.nurseFormContext` 引用）
 
 ### 单元格类型
 | 类型 | 特征 | 必须字段 |
@@ -741,7 +748,7 @@ reportConfig:                         # H8 从催产素模板深拷贝
 
 - 使用 `$$scope.nurseFormContext?.patientInfo` 获取患者数据
 - `$$scope.xxx` 的 `xxx` 必须与 widget 的 `scopeField` 完全一致
-- **`nurseFormContext` 不放入 scopeConfig**，它是系统内置变量，直接在脚本中引用即可
+- **`nurseFormContext` 必须放入 scopeConfig**（`type: "object"`, `defaultValue: {}`），`build_scope_config` 会自动添加
 - 仅当表单有需要自动填充的患者信息字段时才需要写 beforerender 脚本（无自动填充则留空）
 - 示例:
   ```javascript
