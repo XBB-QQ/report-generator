@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.1
+# Report Generator Skill - v8.2
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H23
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H24
 5. **打包 ZIP** → 输出 `nenr_form_<编码>-<版本>.zip`
 
-## 硬性约束（H1-H23，违反即报错或显示异常）
+## 硬性约束（H1-H24，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -54,9 +54,23 @@ description: "智能护理表单模板生成器"
 
 - **H23**: 第一行（R0）必须是空行，且必须合并跨所有列。R0 不含任何控件，用于系统页眉区域。R0C0 可以放 `{医疗机构名称}` 占位符文本（如有则需 input widget），或全为 `null`
 
+### 计算类 H24（actionConfig 交互计算）
+
+- **H24**: 计算控件的 `actionConfig` 必须放在 `componentLogic.interaction` 下，结构为 `{dependencies: [...], actionConfig: [{actionType: "value", action: "..."}]}`
+  - `dependencies`: 声明依赖的其他控件，每项 `{field, variableName, fieldProp}`
+    - `field`: 被依赖控件的 `scopeField`
+    - `variableName`: 脚本中通过 `$$deps[variableName]` 访问的变量名
+    - `fieldProp`: 固定 `"any"`
+  - `actionConfig`: 计算脚本数组，每项 `{actionType: "value", action: "JS代码"}`
+    - `actionType`: 固定 `"value"`（表示计算并返回值）
+    - `action`: JavaScript 代码，通过 `$$deps.xxx` 访问依赖值，`return` 返回计算结果
+    - 代码中换行必须用 `\r\n`
+  - 计算控件本身是只读 input/select，`attribute.readonly` 或 `attribute.clearable: false`
+  - 支持链式计算：A 算总分 → B 依赖 A 的结果算等级
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H23。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H24。
 
 ```python
 #!/usr/bin/env python3
@@ -161,6 +175,56 @@ def w_radio(scope_field, identifier, name, options, vertical=False,
         "disabled": False, "vertical": vertical,
         "props": {"label": "label", "value": "value", "disabled": "disabled"}
     }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+        "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+# --- 计算控件函数 (H24: actionConfig 交互计算) ---
+
+def w_calc_input(scope_field, identifier, name, dependencies, calc_script,
+                 placeholder="自动计算", rowstart=1, rowend=1):
+    """
+    构建带计算逻辑的 input 控件 (H24)
+    dependencies: [(scopeField, variableName), ...] 被依赖的控件
+    calc_script: JavaScript 计算代码(用\\n换行即可, 函数内自动转\\r\\n)
+    通过 $$deps[variableName] 访问依赖值, return 返回计算结果
+    """
+    deps = [{"field": sf, "variableName": vn, "fieldProp": "any"}
+            for sf, vn in dependencies]
+    action = calc_script.replace('\n', '\r\n').replace('\r\r\n', '\r\n')
+    return {"type": "input", "attribute": {
+        "clearable": False, "simplify": False, "size": "small",
+        "placeholder": placeholder, "maxlength": 40,
+        "type": "input", "readonly": True
+    }, "componentLogic": {
+        "interaction": {
+            "dependencies": deps,
+            "actionConfig": [{"actionType": "value", "action": action}]
+        },
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_calc_select(scope_field, identifier, name, options, dependencies, calc_script,
+                  rowstart=1, rowend=1):
+    """
+    构建带计算逻辑的 select 控件 (H24)
+    options: select 的选项列表(与 w_select 相同)
+    dependencies: [(scopeField, variableName), ...]
+    calc_script: JavaScript 代码, return 返回值需匹配 options 的 value
+    """
+    deps = [{"field": sf, "variableName": vn, "fieldProp": "any"}
+            for sf, vn in dependencies]
+    action = calc_script.replace('\n', '\r\n').replace('\r\r\n', '\r\n')
+    return {"type": "select", "attribute": {
+        "disabled": False, "clearable": True, "filterable": False,
+        "multiple": False, "collapseTags": False, "simplify": False,
+        "placeholder": "", "size": "small",
+        "props": {"label": "label", "value": "value", "disabled": "disabled"}
+    }, "componentLogic": {
+        "interaction": {
+            "dependencies": deps,
+            "actionConfig": [{"actionType": "value", "action": action}]
+        },
         "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
         "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
     }, "scopeField": scope_field, "identifier": identifier, "name": name}
@@ -411,6 +475,24 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
         if w["widget"]["type"] == "datePickerQuick":
             errors.append(f"H20: ({r},{c}) 使用了 datePickerQuick, 应改用 datePicker")
 
+    # H24: actionConfig 结构检查
+    for (r, c), w in widgets.items():
+        widget = w["widget"]
+        cl = widget.get("componentLogic", {})
+        interaction = cl.get("interaction")
+        if interaction:
+            deps = interaction.get("dependencies", [])
+            ac = interaction.get("actionConfig", [])
+            for dep in deps:
+                if "field" not in dep or "variableName" not in dep:
+                    errors.append(f"H24: ({r},{c}) dependency 缺少 field/variableName")
+            for action in ac:
+                if action.get("actionType") != "value":
+                    errors.append(f"H24: ({r},{c}) actionType 应为 'value'")
+                code = action.get("action", "")
+                if "\r\n" not in code and "\n" in code:
+                    errors.append(f"H24: ({r},{c}) action 脚本含 \\n 而非 \\r\\n")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -418,7 +500,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H23 全部满足 ===")
+        print("=== 验证通过: H1-H24 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -617,6 +699,8 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | datePicker | `w_date()` | 有 `t:1,v:"占位"` (H20, 不用datePickerQuick) |
 | select | `w_select()` | |
 | radiogroup | `w_radio()` | `vertical` 控制排列方向 |
+| 计算input | `w_calc_input()` | 只读, `interaction.actionConfig` 自动计算 (H24) |
+| 计算select | `w_calc_select()` | 只读, `interaction.actionConfig` 按阈值分级 (H24) |
 
 ### source 空白值规则
 - 空白位置用 `null`（不是 `" "` 空格）
@@ -700,4 +784,82 @@ reportConfig:                         # H8 从催产素模板深拷贝
 - `enableMax:true, max:1` 让 checkboxgroup 表现为单选
 
 ### 纯展示 checkbox
-- `scopeField=""`（H21），不出现在 scopeConfig 中</think>文件已写入。让我验证几个关键部分是否正确。<tool_call>Read<arg_key>file_path</arg_key><arg_value>c:\Users\John\.trae-cn\skills\report-generator\SKILL.md
+- `scopeField=""`（H21），不出现在 scopeConfig 中
+
+### 计算控件模式（H24: actionConfig 交互计算）
+
+适用于评分量表场景：多个 checkboxgroup 选项 → 自动算总分 → 自动判等级。
+
+**模式1：多字段汇总计算（算总分）**
+```python
+# 1. 定义各评分项的 checkboxgroup（正常使用 w_checkbox）
+WIDGETS[(15, 1)] = {"widget": w_checkbox("nldf_mPpq", "mPpq", "年龄得分", [...])}
+WIDGETS[(16, 2)] = {"widget": w_checkbox("ddsdf_NTBs", "NTBs", "跌倒史得分", [...])}
+# ... 更多评分项
+
+# 2. 用 w_calc_input 构建总分控件，依赖上述评分项
+score_deps = [
+    ("nldf_mPpq", "nldf"),       # (scopeField, variableName)
+    ("ddsdf_NTBs", "ddsdf"),
+    ("pxdf_RNLW", "pxdf"),
+    ("ywdf_aeuT", "ywdf"),
+    ("dgdf_Xbdq", "dgdf"),
+    ("hdnldf_BckO", "hdnldf"),
+    ("rzdf_fYMQ", "rzdf"),
+]
+score_script = """
+var fieldConfig = {
+    nldf: { type: 'direct' },
+    pxdf: { type: 'map', map: { '0': 2, '1': 2, '2': 4 } },
+    ddsdf: { type: 'map', map: { '0': 5 } },
+    ywdf: { type: 'map', map: { '0': 3, '1': 5, '2': 7 } },
+    dgdf: { type: 'map', map: { '0': 1, '1': 2, '2': 3 } },
+    hdnldf: { type: 'map', map: { '0': 2, '1': 2, '2': 2 } },
+    rzdf: { type: 'map', map: { '0': 1, '1': 2, '2': 4 } }
+};
+var total = 0;
+var fields = Object.keys(fieldConfig);
+for (var i = 0; i < fields.length; i++) {
+    var fieldName = fields[i];
+    var cfg = fieldConfig[fieldName];
+    var value = $$deps[fieldName];
+    if (value === undefined || value === null || value === '') continue;
+    if (cfg.type === 'direct') {
+        total += parseInt(value) || 0;
+    } else if (cfg.type === 'map') {
+        total += cfg.map[String(value)] || 0;
+    }
+}
+return total;
+"""
+WIDGETS[(6, 2)] = {"widget": w_calc_input(
+    "common_pgfs", "HLEW", "评估分数", score_deps, score_script)}
+```
+
+**模式2：阈值分级（总分→等级）**
+```python
+# select 选项的 value 必须与脚本 return 值对应
+grade_options = [
+    {"label": "低危", "value": "0", "disabled": False},
+    {"label": "中危", "value": "1", "disabled": False},
+    {"label": "高危", "value": "2", "disabled": False},
+]
+grade_deps = [("common_pgfs", "pgfs")]  # 依赖总分控件
+grade_script = """
+var raw = $$deps.pgfs;
+if (raw === undefined || raw === null || raw === '') return '';
+var score = parseInt(raw, 10);
+if (isNaN(score)) return '';
+if (score < 6)  return '0';  // 低危
+if (score < 14) return '1';  // 中危
+return '2';                   // 高危
+"""
+WIDGETS[(6, 11)] = {"widget": w_calc_select(
+    "common_pgdj", "yYnq", "评估等级",
+    grade_options, grade_deps, grade_script)}
+```
+
+**计分映射规则**：
+- `type: 'direct'`：checkboxgroup 的 value 本身就是分数（如 `"3"` → 3 分），直接 `parseInt`
+- `type: 'map'`：checkboxgroup 的 value 是选项序号（如 `"0"/"1"/"2"`），通过 map 映射到实际分数（如 `{'0': 2, '1': 2, '2': 4}`）
+- 映射规则取决于 checkboxgroup 的 dataMaker 中 value 的定义方式</think>文件已写入。让我验证几个关键部分是否正确。<tool_call>Read<arg_key>file_path</arg_key><arg_value>c:\Users\John\.trae-cn\skills\report-generator\SKILL.md
