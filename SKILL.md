@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.4
+# Report Generator Skill - v8.5
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H26
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H29
 5. **打包 ZIP** → 输出 `nenr_form_<编码>-<版本>.zip`
 
-## 硬性约束（H1-H26，违反即报错或显示异常）
+## 硬性约束（H1-H29，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -84,16 +84,72 @@ description: "智能护理表单模板生成器"
   - `expressionStatement` 为条件计算脚本，通过 `$$meta?.widget?.scopeField` 获取当前控件字段名，`$$scope[scopeField]` 获取值，`return { bgColor, contentVisibility }` 返回结果
   - 典型场景：scopeField 值含 `/` 时视为图片路径，隐藏内容并将图片设为背景；否则正常显示文本
 
+### 字典数据源类 H27（固定字典引用）
+
+- **H27**: 当控件语义命中下表"固定字典对应关系"中的条目时，`dataSource` 必须使用 `type: "3"` 引用系统字典，**禁止**用本地 `type: "1"` + `dataMaker` 写死选项
+  - 结构：`{"type": "3", "dataMaker": [<前缀ID...>, "<字典编码>"]}`
+  - `dataMaker` 是**字符串数组**（不是 JSON 字符串），最后一项永远是字典编码，前面是 1~2 个固定前缀 ID
+  - 前缀 ID 规则（按字典命名空间决定）：
+    - `hi.his.*` 命名空间 → `["5d3156deb7cef02f8897f8ac", "5d3159eab7cef02f88980166", "<字典编码>"]`
+    - `sys.*` / `chis.*` 命名空间 → `["5f0eaf0346e0fb00015b313c", "<字典编码>"]`
+    - `CV*` 等 HL7 编码 → 默认用 hi.his 双前缀（如示例缺失时向用户确认）
+  - 适用控件：`select`、`checkboxgroup`、`radiogroup`（多选/单选/下拉框都支持）
+  - 字典选项映射必须设置 `attribute.props: {"label": "text", "value": "cd", "disabled": "disabled"}`，即显示 `text`、取值保存 `cd`；本地 `type: "1"` 选项仍使用 `label/value`
+
+**固定字典对应关系表**（语义命中即用）：
+
+| 中文语义 | 字典编码 |
+|---------|---------|
+| 婚姻 | `hi.his.marry` |
+| 个人类型 | `hi.his.personalIdentityType` |
+| 血型RH反应 | `hi.his.bloodRh` |
+| 个人隐私等级 | `hi.his.personalGrade` |
+| 文化程度 | `sys.per.educationallevel` |
+| 民族 | `hi.his.nation` |
+| 过敏史类型 | `hi.his.allehistp` |
+| 职业 | `hi.his.occu` |
+| 费用类型 | `hi.his.milFeeType` |
+| 就诊卡类型 | `hi.his.ctPivacardtp` |
+| 认证级别 | `hi.his.piCerti` |
+| 证件类型（含监护人证件类型） | `hi.his.pernidtp` |
+| 失效类型 | `hi.his.failtp` |
+| 患者性别 | `hi.his.sex` |
+| 地址类型 | `CV02_01_205` |
+| 联系人与患者的关系 | `hi.his.milRelationType` |
+| 基本卡类型 | `hi.his.pipcardtp` |
+
+**判定流程**：
+1. 解析源文件时，遇到 select/checkboxgroup/radiogroup 控件
+2. 看控件"中文名"或"语义"是否命中上表（如"婚姻状况"/"婚姻"→`hi.his.marry`）
+3. 命中 → 用 `w_select_dict()` / `w_checkbox_dict()` 构建，`type: "3"`
+4. 未命中 → 用 `w_select()` / `w_checkbox()` 本地 dataMaker（`type: "1"`）
+
+### 修改与参考边界类 H28（铁律）
+
+- **H28**: 修改已有报表时，必须直接覆盖当前出错的同一个 ZIP，保持原文件名及报表 `version` 不变；**禁止**递增版本号或另存修复副本
+  - 修改前先读取原报表，修改后写回原路径；不得生成 `v1.0.x`、`_fixed`、`_new` 等额外版本
+  - 用户提供的参考示例只能用于用户**明确指定**的字段或结构；未指定的内容一律不得复制
+  - 例如用户仅指定参考 `dataSource.type="3"` 字典数据源时，只能参考 `dataSource` 结构及字典对应关系，**禁止**复制示例的 `reportConfig`、`pageConfig`、行列尺寸、重复表头或其他配置
+  - 不得擅自进行 Skill 未规定的兼容转换、混合配置或额外“优化”；遇到 Skill 未覆盖的问题，必须先向用户说明并请求确认
+  - 每次修改必须核对差异，确保所有变化都能追溯到用户的明确要求
+
+### 标识符类 H29（JavaScript 点号属性访问）
+
+- **H29**: 每个 widget 的 `identifier` 必须匹配 `^[A-Za-z_$][A-Za-z0-9_$]*$`，**禁止以数字开头**，确保能用于 `reportFormElState.visibility.<identifier>` 等 JavaScript 点号属性访问
+  - 非法示例：`6061Yd`，会生成无效表达式 `reportFormElState.visibility.6061Yd`，导致 Vue 模板编译失败
+  - 合法示例：`w6061Yd`、`ry_xm`
+  - `verify()` 必须在打包前逐项校验，发现非法 `identifier` 直接报错并停止打包
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H26。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H29。
 
 ```python
 #!/usr/bin/env python3
 """
 护理表单报表生成器模板 v8.0
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H26 由 helper 函数自动保障。
+所有硬性约束 H1-H29 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -193,6 +249,82 @@ def w_radio(scope_field, identifier, name, options, vertical=False,
     }, "componentLogic": {
         "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
         "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+# --- 字典数据源控件函数 (H27: 引用系统字典) ---
+
+# 字典命名空间 → 前缀 ID 映射 (H27)
+_DICT_PREFIX_HI_HIS = ["5d3156deb7cef02f8897f8ac", "5d3159eab7cef02f88980166"]
+_DICT_PREFIX_SYS_CHIS = ["5f0eaf0346e0fb00015b313c"]
+
+# 中文语义 → 字典编码 固定对应关系表 (H27)
+DICT_CODES = {
+    "婚姻": "hi.his.marry",
+    "个人类型": "hi.his.personalIdentityType",
+    "血型RH反应": "hi.his.bloodRh",
+    "个人隐私等级": "hi.his.personalGrade",
+    "文化程度": "sys.per.educationallevel",
+    "民族": "hi.his.nation",
+    "过敏史类型": "hi.his.allehistp",
+    "职业": "hi.his.occu",
+    "费用类型": "hi.his.milFeeType",
+    "就诊卡类型": "hi.his.ctPivacardtp",
+    "认证级别": "hi.his.piCerti",
+    "证件类型": "hi.his.pernidtp",
+    "失效类型": "hi.his.failtp",
+    "患者性别": "hi.his.sex",
+    "地址类型": "CV02_01_205",
+    "联系人与患者的关系": "hi.his.milRelationType",
+    "基本卡类型": "hi.his.pipcardtp",
+}
+
+def _dict_datasource(dict_code):
+    """构建 type='3' 字典数据源 (H27)
+    dict_code: 字典编码, 如 'hi.his.marry'
+    返回 {"type": "3", "dataMaker": [<前缀ID...>, dict_code]}
+    """
+    if dict_code.startswith("hi.his."):
+        prefix = list(_DICT_PREFIX_HI_HIS)
+    elif dict_code.startswith(("sys.", "chis.")):
+        prefix = list(_DICT_PREFIX_SYS_CHIS)
+    else:
+        # CV* 等 HL7 编码, 默认用 hi.his 双前缀
+        prefix = list(_DICT_PREFIX_HI_HIS)
+    return {"type": "3", "dataMaker": prefix + [dict_code]}
+
+def w_select_dict(scope_field, identifier, name, dict_code, rowstart=1, rowend=1):
+    """构建引用系统字典的 select 控件 (H27)
+    dict_code: 字典编码, 如 'hi.his.marry' (从 DICT_CODES 查)
+    """
+    return {"type": "select", "attribute": {
+        "disabled": False, "clearable": True, "filterable": False,
+        "multiple": False, "simplify": True, "placeholder": "", "size": "small",
+        "props": {"label": "text", "value": "cd", "disabled": "disabled"}
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+        "dataSource": _dict_datasource(dict_code)
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_checkbox_dict(scope_field, identifier, name, dict_code, vertical=False,
+                    rowstart=1, rowend=1):
+    """构建引用系统字典的 checkboxgroup 控件 (H27)"""
+    return {"type": "checkboxgroup", "attribute": {
+        "disabled": False, "vertical": vertical, "min": 0, "enableMax": False,
+        "props": {"label": "text", "value": "cd", "disabled": "disabled"}
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+        "dataSource": _dict_datasource(dict_code)
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_radio_dict(scope_field, identifier, name, dict_code, vertical=False,
+                 rowstart=1, rowend=1):
+    """构建引用系统字典的 radiogroup 控件 (H27)"""
+    return {"type": "radiogroup", "attribute": {
+        "disabled": False, "vertical": vertical,
+        "props": {"label": "text", "value": "cd", "disabled": "disabled"}
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+        "dataSource": _dict_datasource(dict_code)
     }, "scopeField": scope_field, "identifier": identifier, "name": name}
 
 # --- 计算控件函数 (H24: actionConfig 交互计算) ---
@@ -459,7 +591,7 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 # --- 验证函数 ---
 
 def verify(data, source, meta, merges, resized, widgets, patient_fields):
-    """验证所有硬性约束 H1-H22"""
+    """验证所有硬性约束 H1-H29"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -608,6 +740,12 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
                 if "attributeActiveInfo" not in attr:
                     errors.append(f"H26: ({cell['row']},{cell['col']}) conditionAttribute 缺少 attributeActiveInfo")
 
+    # H29: identifier 必须可用于 JavaScript 点号属性访问
+    for (r, c), w in widgets.items():
+        identifier = w["widget"].get("identifier", "")
+        if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", identifier):
+            errors.append(f"H29: ({r},{c}) identifier={identifier!r} 非法，禁止数字开头或 JS 特殊字符")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -615,7 +753,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H26 全部满足 ===")
+        print("=== 验证通过: H1-H29 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -697,7 +835,7 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H22
+    # 4. 验证 H1-H29
     verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS)
 
     # 5. 打包 ZIP
@@ -813,12 +951,17 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | input | `w_input()` | `simplify:true` (默认), `clearable` 因报表而异, readonly 时 `clearable:false` |
 | checkboxgroup | `w_checkbox()` | `enableMax/max` 模拟单选, `itemSpacing` 控制间距 |
 | datePicker | `w_date()` | 有 `t:1,v:"占位"` (H20, 不用datePickerQuick) |
-| select | `w_select()` | |
+| select | `w_select()` | 本地选项, `dataSource.type:"1"` |
 | radiogroup | `w_radio()` | `vertical` 控制排列方向 |
+| **字典 select** | `w_select_dict()` | 引用系统字典 (H27), `dataSource.type:"3"`, 用于婚姻/民族/职业等 |
+| **字典 checkbox** | `w_checkbox_dict()` | 引用系统字典 (H27) |
+| **字典 radio** | `w_radio_dict()` | 引用系统字典 (H27) |
 | 计算input | `w_calc_input()` | 只读, `interaction.actionConfig` 自动计算 (H24) |
 | 计算select | `w_calc_select()` | 只读, `interaction.actionConfig` 按阈值分级 (H24) |
 | 护士签名 | `w_signature()` | `events` 含 focus+dblclick 弹出表单项 (H25) |
 | 条件属性 | `condition_attribute()` | 添加到 cell, `conditionAttribute` 背景图+内容显隐 (H26) |
+
+**字典控件选择规则（H27）**：语义命中 `DICT_CODES` 表 → 用 `w_*_dict()`；未命中 → 用 `w_*()` 本地选项
 
 ### source 空白值规则
 - 空白位置用 `null`（不是 `" "` 空格）
@@ -850,6 +993,7 @@ reportConfig:                         # H8 从催产素模板深拷贝
 ## identifier 命名规则（关键）
 
 - `identifier` 和 `scopeField` **会被系统当作 JavaScript 变量名**
+- **H29 硬性禁止 `identifier` 以数字开头**；必须匹配 `^[A-Za-z_$][A-Za-z0-9_$]*$`，否则无法用于点号属性访问
 - **禁止**: `/`、空格、`(`、`)`、`-`、`+`、`*` 等 JS 特殊字符
 - **推荐**: 纯小写字母+数字+下划线（如 `ym_xm`、`picccvc_1`）
 - 含 `/` 的名称需转拼音缩写（如 `PICC/CVC` → `picccvc`，`造瘘管/胃管` → `zfqwg`）
@@ -1015,4 +1159,53 @@ WIDGETS[(5, 1)] = {
 - `attributeActiveInfo`：声明影响 `bgColor`（背景）和 `contentVisibility`（内容显隐）
 - `expressionStatement`：通过 `$$meta?.widget?.scopeField` 获取当前字段名，`$$scope[scopeField]` 获取值
   - 值含 `/` → `contentVisibility=false, bgColor.data.url=value`（显示图片）
-  - 值不含 `/` → `contentVisibility=true, bgColor.data.url=''`（显示文本）</think>文件已写入。让我验证几个关键部分是否正确。<tool_call>Read<arg_key>file_path</arg_key><arg_value>c:\Users\John\.trae-cn\skills\report-generator\SKILL.md
+  - 值不含 `/` → `contentVisibility=true, bgColor.data.url=''`（显示文本）
+
+### 字典数据源模式（H27: 引用系统字典）
+
+**入院评估单**是典型的字典数据源场景——婚姻、民族、职业、文化程度等字段都引用系统字典，不写死选项：
+
+```python
+# 患者基本信息 (R1) —— 字典 select
+WIDGETS[(1, 3)] = {"widget": w_select_dict(
+    "zy_kfRM", "kfRM", "职业", "hi.his.occu")}
+WIDGETS[(1, 7)] = {"widget": w_select_dict(
+    "hy_yIYJ", "yIYJ", "婚姻", "hi.his.marry")}
+WIDGETS[(2, 3)] = {"widget": w_select_dict(
+    "mz_FUvC", "FUvC", "民族", "hi.his.nation")}
+WIDGETS[(2, 7)] = {"widget": w_select_dict(
+    "whcd_UdKa", "UdKa", "文化程度", "sys.per.educationallevel")}
+```
+
+生成的 dataSource 结构（对比本地选项）：
+
+```json
+// 字典数据源 (H27) —— 婚姻
+"dataSource": {
+  "type": "3",
+  "dataMaker": ["5d3156deb7cef02f8897f8ac", "5d3159eab7cef02f88980166", "hi.his.marry"]
+}
+
+// 字典数据源 (H27) —— 文化程度 (sys.* 命名空间, 单前缀)
+"dataSource": {
+  "type": "3",
+  "dataMaker": ["5f0eaf0346e0fb00015b313c", "sys.per.educationallevel"]
+}
+
+// 本地选项 (普通情况, 未命中字典表)
+"dataSource": {
+  "type": "1",
+  "dataMaker": "[\r\n  {\r\n    \"label\": \"选项A\",\r\n    \"value\": \"1\"\r\n  }\r\n]"
+}
+```
+
+**判定流程**：
+1. 解析 PDF/DOCX 时遇到 select/checkboxgroup/radiogroup 控件
+2. 把控件中文名跟 `DICT_CODES` 表的 17 个 key 做语义匹配（支持"婚姻状况"→"婚姻"这种模糊匹配）
+3. 命中 → `w_select_dict(scope_field, identifier, name, dict_code)`
+4. 未命中 → `w_select(scope_field, identifier, name, options)` 用本地选项
+
+**前缀 ID 速查**：
+- `hi.his.*` → 双前缀 `["5d3156deb7cef02f8897f8ac", "5d3159eab7cef02f88980166"]`
+- `sys.*` / `chis.*` → 单前缀 `["5f0eaf0346e0fb00015b313c"]`
+- `CV*` 等 HL7 编码 → 默认双前缀（如遇异常向用户确认）</think>文件已写入。让我验证几个关键部分是否正确。<tool_call>Read<arg_key>file_path</arg_key><arg_value>c:\Users\John\.trae-cn\skills\report-generator\SKILL.md
