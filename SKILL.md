@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.5
+# Report Generator Skill - v8.6
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H29
-5. **打包 ZIP** → 输出 `nenr_form_<编码>-<版本>.zip`
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H32
+5. **打包 ZIP** → 输出 `<cd>-1.0.1.zip`
 
-## 硬性约束（H1-H29，违反即报错或显示异常）
+## 硬性约束（H1-H32，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -126,7 +126,7 @@ description: "智能护理表单模板生成器"
 
 ### 修改与参考边界类 H28（铁律）
 
-- **H28**: 修改已有报表时，必须直接覆盖当前出错的同一个 ZIP，保持原文件名及报表 `version` 不变；**禁止**递增版本号或另存修复副本
+- **H28**: 修改已有报表时，必须直接覆盖当前出错的同一个 ZIP，保持原文件名，且 `version` 按 H31 固定为 `"1.0.1"`；**禁止**递增版本号或另存修复副本
   - 修改前先读取原报表，修改后写回原路径；不得生成 `v1.0.x`、`_fixed`、`_new` 等额外版本
   - 用户提供的参考示例只能用于用户**明确指定**的字段或结构；未指定的内容一律不得复制
   - 例如用户仅指定参考 `dataSource.type="3"` 字典数据源时，只能参考 `dataSource` 结构及字典对应关系，**禁止**复制示例的 `reportConfig`、`pageConfig`、行列尺寸、重复表头或其他配置
@@ -140,16 +140,27 @@ description: "智能护理表单模板生成器"
   - 合法示例：`w6061Yd`、`ry_xm`
   - `verify()` 必须在打包前逐项校验，发现非法 `identifier` 直接报错并停止打包
 
+### 顶层标识类 H30-H32（cd/version/instr）
+
+- **H30**: `cd` 必须使用完整格式 `nenr_form_xxx`；`xxx` 根据所提供模板的中文名称语义翻译为简洁英文，优先采用适用的医疗标准术语，保持简洁、不过长
+  - 合法示例：表单“入院护理评估单” → `nenr_form_admission_nursing_assessment`
+  - `xxx` 只能使用小写英文字母、数字和下划线，必须以字母开头；完整格式必须匹配 `^nenr_form_[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`
+  - 生成时必须人工核对英文语义与模板名称一致；正则校验不能替代语义和医疗术语审查
+- **H31**: `version` 必须固定为字符串 `"1.0.1"`，禁止递增或使用其他版本号
+- **H32**: `instr` 必须严格等于 `cd + "," + na`，即 `"nenr_form_xxx,表单中文名"`
+  - 示例：`"nenr_form_admission_nursing_assessment,入院护理评估单"`
+  - `verify()` 必须在打包前逐项校验 H30-H32，任一不符直接报错并停止打包
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H29。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H32。
 
 ```python
 #!/usr/bin/env python3
 """
 护理表单报表生成器模板 v8.0
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H29 由 helper 函数自动保障。
+所有硬性约束 H1-H32 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -591,7 +602,7 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 # --- 验证函数 ---
 
 def verify(data, source, meta, merges, resized, widgets, patient_fields):
-    """验证所有硬性约束 H1-H29"""
+    """验证所有硬性约束 H1-H32"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -746,6 +757,20 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
         if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", identifier):
             errors.append(f"H29: ({r},{c}) identifier={identifier!r} 非法，禁止数字开头或 JS 特殊字符")
 
+    # H30: cd 使用 nenr_form_ + 简洁英文语义编码
+    cd = data.get("cd", "")
+    if not isinstance(cd, str) or not re.fullmatch(r"nenr_form_[a-z][a-z0-9]*(?:_[a-z0-9]+)*", cd):
+        errors.append(f"H30: cd={cd!r} 非法，必须为 nenr_form_xxx，xxx 使用简洁英文语义编码")
+
+    # H31: version 固定为 1.0.1
+    if data.get("version") != "1.0.1":
+        errors.append(f"H31: version={data.get('version')!r} 非法，必须固定为 '1.0.1'")
+
+    # H32: instr 严格等于 cd,na
+    expected_instr = f"{cd},{data.get('na', '')}"
+    if data.get("instr") != expected_instr:
+        errors.append(f"H32: instr={data.get('instr')!r} 非法，必须为 {expected_instr!r}")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -753,13 +778,13 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H29 全部满足 ===")
+        print("=== 验证通过: H1-H32 全部满足 ===")
 
 # --- 打包函数 ---
 
 def package(data, form_cd, form_version, output_dir):
     """打包 ZIP (H12: UTF-8编码)"""
-    base = f"nenr_form_{form_cd}-{form_version}"
+    base = f"{form_cd}-{form_version}"
     zip_name = f"{base}.zip"
     report_name = f"{base}.report"
     zip_path = os.path.join(output_dir, zip_name)
@@ -774,9 +799,9 @@ def package(data, form_cd, form_version, output_dir):
 # === 表单定义区（模型修改此处） ===
 # ============================================================
 
-FORM_CD = ""           # 表单编码, 如 "health_education"
+FORM_CD = ""           # 完整表单编码, 如 "nenr_form_health_education" (H30)
 FORM_NA = ""           # 表单名称, 如 "老年医学科健康教育指导单"
-FORM_VERSION = "1.0.1"
+FORM_VERSION = "1.0.1"  # 固定版本号, 禁止修改 (H31)
 REFERENCE_ZIP = r"c:\Users\John\Documents\AweSun Files\nenr_form_oxytocin_record-1.0.1.zip"
 OUTPUT_DIR = r"c:\Users\John\Documents\AweSun Files"
 
@@ -835,7 +860,7 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H29
+    # 4. 验证 H1-H32
     verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS)
 
     # 5. 打包 ZIP
@@ -848,11 +873,12 @@ if __name__ == "__main__":
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | str | `uuid.uuid4().hex[:24]` |
-| `cd` | str | 表单编码 |
-| `na` | str | 表单名称 |
+| `cd` | str | 完整格式 `nenr_form_xxx`，`xxx` 为简洁英文语义编码 (H30) |
+| `na` | str | 表单中文名称 |
 | `template` | **str** | `json.dumps(template_obj, ensure_ascii=False)` (H1) |
 | `categoryId` | str | `""` (空字符串, 系统导入后自动生成) |
-| `version` | str | 如 `"1.0.1"` |
+| `version` | str | 固定为 `"1.0.1"` (H31) |
+| `instr` | str | 严格等于 `cd + "," + na` (H32) |
 | `tenantId` | str | `"BSOFTYL"` |
 | `createUser`/`modifyUser` | str | `"admin"` |
 | `active` | bool | `true` |
