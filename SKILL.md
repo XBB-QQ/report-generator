@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.6
+# Report Generator Skill - v8.7
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H32
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H33
 5. **打包 ZIP** → 输出 `<cd>-1.0.1.zip`
 
-## 硬性约束（H1-H32，违反即报错或显示异常）
+## 硬性约束（H1-H33，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -28,7 +28,7 @@ description: "智能护理表单模板生成器"
 - **H5**: `eventConfig` 必须是列表且包含全部 7 个标准事件（`beforeload`/`afterload`/`beforerender`/`afterrender`/`beforeprint`/`afterprint`/`childReportMsg`），即使脚本为空也必须有条目
 - **H6**: `resized.rows`/`resized.cols` 元素必须是纯数字，`len(rows)` = `len(source)`，`len(cols)` = 每行列数
 - **H7**: `merges` 元素必须是对象 `{startRow, startColumn, endRow, endColumn}`，不允许数组
-- **H8**: `reportConfig` 必须从已验证模板（催产素报表 ZIP）深拷贝 14 个标准字段，只替换 `scopeConfig`/`eventConfig`，不可自行构造或缩减
+- **H8**: `reportConfig` 必须从已验证模板（催产素报表 ZIP）深拷贝 14 个标准字段，只允许替换 `scopeConfig`/`eventConfig`，以及按 H33 将 `pageConfig.printFormat` 固定为 `"pdf"`；不可自行构造或缩减
 
 ### 内容类 H9-H14（单元格逻辑）
 
@@ -151,16 +151,22 @@ description: "智能护理表单模板生成器"
   - 示例：`"nenr_form_admission_nursing_assessment,入院护理评估单"`
   - `verify()` 必须在打包前逐项校验 H30-H32，任一不符直接报错并停止打包
 
+### 打印格式类 H33（pageConfig）
+
+- **H33**: `template.reportConfig.pageConfig.printFormat` 必须固定为字符串 `"pdf"`，生成时默认写入该值，禁止改为 `"html"` 或其他值
+  - 该约束仅针对 `pageConfig.printFormat`，不改变 `printOptions.printFormat`
+  - `verify()` 必须在打包前校验，发现不符直接报错并停止打包
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H32。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H33。
 
 ```python
 #!/usr/bin/env python3
 """
 护理表单报表生成器模板 v8.0
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H32 由 helper 函数自动保障。
+所有硬性约束 H1-H33 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -522,12 +528,14 @@ def build_resized(row_heights, col_widths):
     return {"rows": list(row_heights), "cols": list(col_widths)}
 
 def load_report_config(reference_zip_path):
-    """从已验证模板深拷贝 reportConfig (H8)"""
+    """从已验证模板深拷贝 reportConfig (H8)，并按 H33 固定打印格式"""
     with zipfile.ZipFile(reference_zip_path, 'r') as z:
         report_name = [n for n in z.namelist() if n.endswith('.report')][0]
         ref_data = json.loads(z.read(report_name).decode('utf-8'))
     ref_template = json.loads(ref_data['template'])
-    return copy.deepcopy(ref_template['reportConfig'])
+    report_config = copy.deepcopy(ref_template['reportConfig'])
+    report_config['pageConfig']['printFormat'] = 'pdf'  # H33
+    return report_config
 
 def build_scope_config(widgets, extra_fields=None):
     """构建 scopeConfig (H4: 列表, name匹配scopeField)
@@ -602,7 +610,7 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 # --- 验证函数 ---
 
 def verify(data, source, meta, merges, resized, widgets, patient_fields):
-    """验证所有硬性约束 H1-H32"""
+    """验证所有硬性约束 H1-H33"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -771,6 +779,11 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
     if data.get("instr") != expected_instr:
         errors.append(f"H32: instr={data.get('instr')!r} 非法，必须为 {expected_instr!r}")
 
+    # H33: pageConfig.printFormat 固定为 pdf
+    page_print_format = rc.get("pageConfig", {}).get("printFormat")
+    if page_print_format != "pdf":
+        errors.append(f"H33: pageConfig.printFormat={page_print_format!r} 非法，必须固定为 'pdf'")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -778,7 +791,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H32 全部满足 ===")
+        print("=== 验证通过: H1-H33 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -860,7 +873,7 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H32
+    # 4. 验证 H1-H33
     verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS)
 
     # 5. 打包 ZIP
@@ -938,7 +951,7 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | `pageSizeValue` | `"210x297"` | 纸张尺寸 |
 | `pageSizeConf` | `"predefine"` | 预定义纸张 |
 | `printMode` | `"server"` | 打印模式 |
-| `printFormat` | `"html"` | 打印格式 |
+| `printFormat` | `"pdf"` | 打印格式（H33，固定值） |
 | `bbPlaceholder` | `True` | 占位符 |
 | `needFillByRow` | `False` | 按行填充 |
 | `fillBy` | `0` | 填充方式 |
