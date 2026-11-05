@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.7
+# Report Generator Skill - v8.8
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H33
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H35
 5. **打包 ZIP** → 输出 `<cd>-1.0.1.zip`
 
-## 硬性约束（H1-H33，违反即报错或显示异常）
+## 硬性约束（H1-H35，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -26,6 +26,7 @@ description: "智能护理表单模板生成器"
 - **H3**: `meta` 必须是扁平列表，长度 = 行数 × 列数，每个元素对应一个单元格
 - **H4**: `scopeConfig` 必须是列表，每个 `name` 必须与对应 widget 的 `scopeField` 完全匹配
 - **H5**: `eventConfig` 必须是列表且包含全部 7 个标准事件（`beforeload`/`afterload`/`beforerender`/`afterrender`/`beforeprint`/`afterprint`/`childReportMsg`），即使脚本为空也必须有条目
+  - 非空脚本通过 `EVENT_SCRIPTS` 按 `eventName` 注入；`beforerender_script` 参数仅用于兼容原有调用
 - **H6**: `resized.rows`/`resized.cols` 元素必须是纯数字，`len(rows)` = `len(source)`，`len(cols)` = 每行列数
 - **H7**: `merges` 元素必须是对象 `{startRow, startColumn, endRow, endColumn}`，不允许数组
 - **H8**: `reportConfig` 必须从已验证模板（催产素报表 ZIP）深拷贝 14 个标准字段，只允许替换 `scopeConfig`/`eventConfig`，以及按 H33 将 `pageConfig.printFormat` 固定为 `"pdf"`；不可自行构造或缩减
@@ -36,45 +37,46 @@ description: "智能护理表单模板生成器"
 - **H10**: 所有 `proxyCell: true` 的 cell 必须有 `realCellPosition: {row, col}` 指向主单元格
 - **H11**: `dataMaker` 换行必须用 `\r\n`（`json.dumps(...).replace('\n', '\r\n')`）
 - **H12**: ZIP 内容必须 UTF-8 编码，JSON 序列化 `ensure_ascii=False`
-- **H13**: 总列数 = 患者信息字段数 × 2（标签列+值列），患者信息必须在一行内
+- **H13**: PC 表单总列数 = 患者信息字段数 × 2（标签列+值列），患者信息必须在一行内；PDA 表单按 H34，不适用本规则
 - **H14**: 多行文本单元格必须设置 `tb=3`（不是 0/1），否则 `\r\n` 不生效
 
 ### 显示类 H15-H22（原"最佳实践"，升级为硬性）
 
 - **H15**: 标题行和表头行的 cell 必须设置 `ht=2`（水平居中）
 - **H16**: 文本单元格必须包含 `v`（文本值）和 `t: 1`（类型标记）字段
-- **H17**: 列宽必须精确计算（允许小数如 `30.5`/`129.5`），总宽度接近 A4 可用宽度（~768px），不使用整数估算
+- **H17**: PC 表单列宽必须精确计算（允许小数如 `30.5`/`129.5`），总宽度接近 A4 可用宽度（~768px），不使用整数估算；PDA 按 H34
 - **H18**: 行高必须根据内容行数精确设置；空行（分隔行）高度必须为 `11.5px`（不是标准行高）
 - **H19**: 医疗机构名称必须添加 input widget（`scopeField` 可为空字符串 `""`）
-- **H20**: 日期控件必须使用 `datePicker` 类型（有 `t:1, v:"占位文本"`），不使用 `datePickerQuick`
+- **H20**: PC 日期控件必须使用 `datePicker` 类型（有 `t:1, v:"占位文本"`），不使用 `datePickerQuick`；PDA 必须使用 `vantDateTimePicker`，按 H34
 - **H21**: 纯展示性 checkbox（如"已指导"标记）`scopeField` 必须为空字符串 `""`
-- **H22**: checkboxgroup 当选项 ≥ 3 个时应设置 `itemSpacing` 控制间距（推荐值 30）
+- **H22**: checkboxgroup 当选项 ≥ 3 个时应设置 `itemSpacing` 控制间距（PC 推荐 30，PDA 推荐 12）；radiogroup/vantRadiogroup 可按需设置 `itemSpacing` 和 `allowDeselect`
 
 ### 布局类 H23（页面结构）
 
-- **H23**: 第一行（R0）必须是空行，且必须合并跨所有列。R0 不含任何控件，用于系统页眉区域。R0C0 可以放 `{医疗机构名称}` 占位符文本（如有则需 input widget），或全为 `null`
+- **H23**: PC 第一行（R0）必须是空行，且必须合并跨所有列。R0 不含任何控件，用于系统页眉区域。R0C0 可以放 `{医疗机构名称}` 占位符文本（如有则需 input widget），或全为 `null`；PDA 不保留该空行，按 H34 直接从业务字段开始
 
 ### 计算类 H24（actionConfig 交互计算）
 
 - **H24**: 计算控件的 `actionConfig` 必须放在 `componentLogic.interaction` 下，结构为 `{dependencies: [...], actionConfig: [{actionType: "value", action: "..."}]}`
   - `dependencies`: 声明依赖的其他控件，每项 `{field, variableName, fieldProp}`
-    - `field`: 被依赖控件的 `scopeField`
+    - `field`: 被依赖控件的 `scopeField` 字符串，不使用数组或嵌套字段
     - `variableName`: 脚本中通过 `$$deps[variableName]` 访问的变量名
     - `fieldProp`: 固定 `"any"`
   - `actionConfig`: 计算脚本数组，每项 `{actionType: "value", action: "JS代码"}`
     - `actionType`: 固定 `"value"`（表示计算并返回值）
     - `action`: JavaScript 代码，通过 `$$deps.xxx` 访问依赖值，`return` 返回计算结果
     - 代码中换行必须用 `\r\n`
-  - 计算控件本身是只读 input/select，`attribute.readonly` 或 `attribute.clearable: false`
+  - 适用控件：PC 的 `input/select/checkboxgroup` 与 PDA 的 `vantInput/vantSelect/vantCheckboxgroup`；通用场景用 `add_calculation()` 给现有 widget 附加计算，不重复拼装控件
+  - input/select 计算结果字段应只读或禁止手动清除；checkboxgroup/vantCheckboxgroup 的空结果必须返回 `[]`，字符串控件空结果返回 `""`，不得混用类型
   - 支持链式计算：A 算总分 → B 依赖 A 的结果算等级
 
 ### 交互类 H25-H26（固定配置）
 
-- **H25**: 需要弹出表单项的 input 控件（如"护士签名"），必须在 `componentLogic.events` 中添加两个固定事件：
-  - 焦点事件：`{"id": "<random>", "name": "获得焦点", "type": "focus", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"}`
-  - 双击事件：`{"id": "<random>", "name": "双击", "type": "dblclick.native", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });"}`
+- **H25**: 需要弹出表单项的签名控件（如"护士签名"），必须在 `componentLogic.events` 中添加平台对应事件：
+  - PC input 同时添加焦点事件 `{"id": "<random>", "name": "获得焦点", "type": "focus", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"}` 和双击事件 `{"id": "<random>", "name": "双击", "type": "dblclick.native", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });"}`
+  - PDA vantInput 只添加同一个焦点事件，不添加 `dblclick.native`
   - `id` 使用随机6位字符串（如 `"QBaY9r"`），每个事件的 id 不同
-  - 这两个事件触发系统弹出表单项弹窗，focus 为单击触发（triggerType 默认），dblclick 为双击触发（triggerType='2'）
+  - focus 为单击触发（triggerType 默认），PC dblclick 为双击触发（triggerType='2'）；普通 `change` 事件不属于签名事件，不得套用本规则
 
 - **H26**: 需要条件显示的单元格（如签名图片展示），必须在 cell 上添加 `conditionAttribute` 数组：
   - 结构：`[{"id": "<random>", "attributeActiveInfo": [...], "expressionStatement": "<脚本>", "str": "", "isEditable": false, "name": "条件属性1"}]`
@@ -157,16 +159,32 @@ description: "智能护理表单模板生成器"
   - 该约束仅针对 `pageConfig.printFormat`，不改变 `printOptions.printFormat`
   - `verify()` 必须在打包前校验，发现不符直接报错并停止打包
 
+### PDA 平台类 H34
+
+- **H34**: `PLATFORM` 只能为 `"PC"` 或 `"PDA"`，默认 `"PC"`；同一表单不得混用两套控件
+  - 常规 PDA 采用两列“标签 + 控件”布局，不合并单元格，R0 直接放业务字段；普通行高 `24`，多行内容按需要增加，列宽总计约 `375px`
+  - 控件映射：`input → vantInput`、`select → vantSelect`、`checkboxgroup → vantCheckboxgroup`、`radiogroup → vantRadiogroup`、`datePicker → vantDateTimePicker`
+  - PDA 单选限制直接使用 `vantCheckboxgroup.attribute.max: 1`，方向使用 `direction`，不照搬 PC 的 `vertical/enableMax`
+  - 所有 PDA cell 必须带 `prop: <列序号>`、`borders: {}`、`hyperlink: []`、`columnFilter: false`；由 `build_meta(..., platform="PDA")` 自动补齐
+  - `vantCheckboxgroup` 在 `scopeConfig` 中必须是 `type: "array"`、`defaultValue: []`；PDA 签名只使用 H25 的 focus 事件
+
+### 动态行显隐类 H35
+
+- **H35**: 根据控件值显示或隐藏明细行时，必须同时配置控件 `change` 事件与报表 `afterload` 初始状态，不能只处理其中一端
+  - 控件用 `add_change_event(widget, row_visibility_handler(rows, show_values))`：命中 `show_values` 时执行 `$$setRowsVisible(rows)`，否则执行 `$$setRowsHidden(rows)`
+  - 默认隐藏时，将 `rows_afterload_hidden(rows)` 放入 `EVENT_SCRIPTS["afterload"]`；行号使用与 source/meta 一致的从 0 开始索引
+  - 显隐脚本不得包含 `debugger`、调试日志、被注释的失效分支；多选控件需先明确数组值比较逻辑，不能直接套用单值 `$$value` 比较
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H33。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H35。
 
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.0
+护理表单报表生成器模板 v8.8
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H33 由 helper 函数自动保障。
+所有硬性约束 H1-H35 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -258,10 +276,75 @@ def w_select(scope_field, identifier, name, options, rowstart=1, rowend=1):
     }, "scopeField": scope_field, "identifier": identifier, "name": name}
 
 def w_radio(scope_field, identifier, name, options, vertical=False,
-            rowstart=1, rowend=1):
-    """构建 radiogroup 控件"""
-    return {"type": "radiogroup", "attribute": {
-        "disabled": False, "vertical": vertical,
+            rowstart=1, rowend=1, allow_deselect=None, item_spacing=None):
+    """构建 radiogroup 控件；可选参数不改变旧版默认输出"""
+    attr = {"disabled": False, "vertical": vertical,
+            "props": {"label": "label", "value": "value", "disabled": "disabled"}}
+    if allow_deselect is not None: attr["allowDeselect"] = allow_deselect
+    if item_spacing is not None: attr["itemSpacing"] = item_spacing
+    return {"type": "radiogroup", "attribute": attr,
+            "componentLogic": {
+                "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+                "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+            }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+# --- PDA 控件构建函数 (H34) ---
+
+def w_vant_input(scope_field, identifier, name, placeholder="", readonly=False,
+                 clearable=True, rowstart=1, rowend=1):
+    """构建 PDA vantInput 控件"""
+    return {"type": "vantInput", "attribute": {
+        "readonly": readonly, "clearable": clearable, "type": "input",
+        "maxlength": 40, "placeholder": placeholder, "size": ""
+    }, "componentLogic": {
+        "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_vant_date(scope_field, identifier, name, placeholder="", mode="datetime",
+                rowstart=1, rowend=1):
+    """构建 PDA 日期控件；mode 为 datetime 或 date"""
+    if mode not in ("datetime", "date"):
+        raise ValueError("vantDateTimePicker mode 必须为 datetime 或 date")
+    attr = {"clearable": True, "disabled": False, "type": mode,
+            "valueFormat": "yyyy-MM-dd" if mode == "date" else "yyyy-MM-dd HH:mm"}
+    if placeholder: attr["placeholder"] = placeholder
+    return {"type": "vantDateTimePicker", "attribute": attr,
+            "componentLogic": {
+                "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
+            }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_vant_checkbox(scope_field, identifier, name, options, direction="horizontal",
+                    max_val=None, item_spacing=12, rowstart=1, rowend=1):
+    """构建 PDA 多选控件；单选限制直接传 max_val=1"""
+    attr = {"direction": direction, "disabled": False,
+            "props": {"label": "label", "value": "value", "disabled": "disabled"}}
+    if max_val is not None: attr["max"] = max_val
+    if item_spacing is not None: attr["itemSpacing"] = item_spacing
+    return {"type": "vantCheckboxgroup", "attribute": attr,
+            "componentLogic": {
+                "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+                "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+            }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_vant_radio(scope_field, identifier, name, options, direction="horizontal",
+                 allow_deselect=None, item_spacing=12, rowstart=1, rowend=1):
+    """构建 PDA 单选控件"""
+    attr = {"direction": direction, "disabled": False,
+            "props": {"label": "label", "value": "value", "disabled": "disabled"}}
+    if allow_deselect is not None: attr["allowDeselect"] = allow_deselect
+    if item_spacing is not None: attr["itemSpacing"] = item_spacing
+    return {"type": "vantRadiogroup", "attribute": attr,
+            "componentLogic": {
+                "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
+                "dataSource": {"type": "1", "dataMaker": _datamaker(options)}
+            }, "scopeField": scope_field, "identifier": identifier, "name": name}
+
+def w_vant_select(scope_field, identifier, name, options, placeholder="",
+                  rowstart=1, rowend=1):
+    """构建 PDA 下拉控件"""
+    return {"type": "vantSelect", "attribute": {
+        "clearable": True, "disabled": False, "filterable": False,
+        "multiple": False, "placeholder": placeholder,
         "props": {"label": "label", "value": "value", "disabled": "disabled"}
     }, "componentLogic": {
         "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""},
@@ -344,6 +427,42 @@ def w_radio_dict(scope_field, identifier, name, dict_code, vertical=False,
         "dataSource": _dict_datasource(dict_code)
     }, "scopeField": scope_field, "identifier": identifier, "name": name}
 
+# --- 通用计算与动态行显隐 (H24/H35) ---
+
+def add_calculation(widget, dependencies, calc_script):
+    """给现有 PC/PDA widget 附加计算回写并返回该 widget"""
+    deps = [{"field": sf, "variableName": vn, "fieldProp": "any"}
+            for sf, vn in dependencies]
+    action = calc_script.replace('\n', '\r\n').replace('\r\r\n', '\r\n')
+    widget["componentLogic"]["interaction"] = {
+        "dependencies": deps,
+        "actionConfig": [{"actionType": "value", "action": action}]
+    }
+    return widget
+
+def add_change_event(widget, handler):
+    """给现有 widget 添加 change 事件并返回该 widget"""
+    event = {"id": _rand_id(), "name": "状态改变", "type": "change",
+             "handler": handler.replace('\n', '\r\n').replace('\r\r\n', '\r\n')}
+    widget["componentLogic"].setdefault("events", []).append(event)
+    return widget
+
+def row_visibility_handler(rows, show_values):
+    """生成单值控件的行显隐 change 脚本"""
+    rows_json = json.dumps(list(rows), ensure_ascii=False)
+    values_json = json.dumps(list(show_values), ensure_ascii=False)
+    return (f"const rows = {rows_json};\r\n"
+            f"const showValues = {values_json};\r\n"
+            "if (showValues.includes($$value)) {\r\n"
+            "  $$setRowsVisible(rows);\r\n"
+            "} else {\r\n"
+            "  $$setRowsHidden(rows);\r\n"
+            "}")
+
+def rows_afterload_hidden(rows):
+    """生成 afterload 初始隐藏脚本"""
+    return f"$$setRowsHidden({json.dumps(list(rows))});"
+
 # --- 计算控件函数 (H24: actionConfig 交互计算) ---
 
 def w_calc_input(scope_field, identifier, name, dependencies, calc_script,
@@ -423,6 +542,16 @@ def w_signature(scope_field, identifier, name, rowstart=1, rowend=1):
         "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
     }, "scopeField": scope_field, "identifier": identifier, "name": name}
 
+def w_vant_signature(scope_field, identifier, name, rowstart=1, rowend=1):
+    """构建 PDA 签名控件 (H25: 仅 focus 事件)"""
+    widget = w_vant_input(scope_field, identifier, name,
+                          rowstart=rowstart, rowend=rowend)
+    widget["componentLogic"]["events"] = [
+        {"id": _rand_id(), "name": "获得焦点", "type": "focus",
+         "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"}
+    ]
+    return widget
+
 # --- 条件属性函数 (H26: 单元格条件显示) ---
 
 _CONDITION_ATTR_SCRIPT = """let contentVisibility = true;\r
@@ -474,12 +603,15 @@ def build_merges(merge_list):
     return [{"startRow": sr, "startColumn": sc, "endRow": er, "endColumn": ec}
             for sr, sc, er, ec in merge_list]
 
-def build_meta(source, merge_list, widgets, title_rows, header_rows, multiline_cells):
+def build_meta(source, merge_list, widgets, title_rows, header_rows, multiline_cells,
+               platform="PC"):
     """
     构建 meta 扁平列表 (H3: 长度=行×列)
     自动处理: H9(proxyCell无widget), H10(realCellPosition),
-              H14(tb=3), H15(ht=2), H16(v和t:1)
+              H14(tb=3), H15(ht=2), H16(v和t:1), H34(PDA cell字段)
     """
+    if platform not in ("PC", "PDA"):
+        raise ValueError("platform 必须为 PC 或 PDA")
     n_rows = len(source)
     n_cols = len(source[0]) if source else 0
     title_rows = title_rows or set()
@@ -521,6 +653,9 @@ def build_meta(source, merge_list, widgets, title_rows, header_rows, multiline_c
                     meta.append(text_cell(r, c, val, ht=ht, tb=tb, fs=fs, bl=bl))
                 else:
                     meta.append(empty_cell(r, c))
+            if platform == "PDA":
+                meta[-1].update({"prop": c, "borders": {}, "hyperlink": [],
+                                 "columnFilter": False})
     return meta
 
 def build_resized(row_heights, col_widths):
@@ -549,7 +684,7 @@ def build_scope_config(widgets, extra_fields=None):
         sf = w["widget"].get("scopeField", "")
         if sf and sf not in seen:
             wtype = w["widget"]["type"]
-            dtype = "array" if wtype in ("checkboxgroup",) else "string"
+            dtype = "array" if wtype in ("checkboxgroup", "vantCheckboxgroup") else "string"
             config.append({"name": sf, "defaultValue": [] if dtype == "array" else "",
                            "type": dtype, "desc": w["widget"].get("name", "")})
             seen.add(sf)
@@ -566,15 +701,18 @@ def build_scope_config(widgets, extra_fields=None):
         seen.add("nurseFormContext")
     return config
 
-def build_event_config(beforerender_script=""):
-    """构建 eventConfig (H5: 7个标准事件)"""
+def build_event_config(beforerender_script="", event_scripts=None):
+    """构建 eventConfig (H5: 7个标准事件，按事件名注入脚本)"""
     events = ["beforeload", "afterload", "beforerender", "afterrender",
               "beforeprint", "afterprint", "childReportMsg"]
-    config = []
-    for ev in events:
-        script = beforerender_script if ev == "beforerender" else ""
-        config.append({"eventName": ev, "expressionStatement": script})
-    return config
+    scripts = dict(event_scripts or {})
+    unknown = set(scripts) - set(events)
+    if unknown:
+        raise ValueError(f"未知报表事件: {sorted(unknown)}")
+    if beforerender_script:
+        scripts["beforerender"] = beforerender_script
+    return [{"eventName": ev, "expressionStatement": scripts.get(ev, "")}
+            for ev in events]
 
 def build_template(source, meta, merges, resized, report_config):
     """构建完整 template 对象"""
@@ -609,8 +747,8 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 
 # --- 验证函数 ---
 
-def verify(data, source, meta, merges, resized, widgets, patient_fields):
-    """验证所有硬性约束 H1-H33"""
+def verify(data, source, meta, merges, resized, widgets, patient_fields, platform="PC"):
+    """验证所有硬性约束 H1-H35；platform 默认 PC，保持旧调用兼容"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -686,10 +824,11 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
         if dm and "\r\n" not in dm and "\n" in dm:
             errors.append(f"H11: ({r},{c}) dataMaker 含 \\n 而非 \\r\\n")
 
-    # H13: 列数 = 患者字段 × 2
-    expected_cols = len(patient_fields) * 2
-    if n_cols != expected_cols:
-        errors.append(f"H13: 列数{n_cols} != 患者字段{len(patient_fields)}×2={expected_cols}")
+    # H13: PC 列数 = 患者字段 × 2；PDA 按 H34
+    if platform == "PC":
+        expected_cols = len(patient_fields) * 2
+        if n_cols != expected_cols:
+            errors.append(f"H13: 列数{n_cols} != 患者字段{len(patient_fields)}×2={expected_cols}")
 
     # H14: 多行文本有 tb=3（检查 source 中含 \r\n 的 cell）
     for r, row in enumerate(source):
@@ -708,27 +847,33 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
                 # 空白 cell 可以没有 v，有边框的 cell 应该有
                 pass  # 非强制，避免误报
 
-    # H17: 列宽总和 ~768
+    # H17: PC 列宽总和 ~768；PDA 按 H34
     total_w = sum(resized["cols"])
-    if total_w < 700 or total_w > 820:
+    if platform == "PC" and (total_w < 700 or total_w > 820):
         errors.append(f"H17: 列宽总和{total_w} 偏离768过多")
 
-    # H20: 日期控件用 datePicker
+    # H20: 禁用 datePickerQuick，按平台选择日期控件
     for (r, c), w in widgets.items():
         if w["widget"]["type"] == "datePickerQuick":
-            errors.append(f"H20: ({r},{c}) 使用了 datePickerQuick, 应改用 datePicker")
+            errors.append(f"H20: ({r},{c}) datePickerQuick 禁用；PC 用 datePicker，PDA 用 vantDateTimePicker")
 
     # H24: actionConfig 结构检查
+    calc_types = {"input", "select", "checkboxgroup",
+                  "vantInput", "vantSelect", "vantCheckboxgroup"}
     for (r, c), w in widgets.items():
         widget = w["widget"]
         cl = widget.get("componentLogic", {})
         interaction = cl.get("interaction")
         if interaction:
+            if widget.get("type") not in calc_types:
+                errors.append(f"H24: ({r},{c}) {widget.get('type')} 不在已验证的计算控件范围")
             deps = interaction.get("dependencies", [])
             ac = interaction.get("actionConfig", [])
             for dep in deps:
-                if "field" not in dep or "variableName" not in dep:
-                    errors.append(f"H24: ({r},{c}) dependency 缺少 field/variableName")
+                if not isinstance(dep.get("field"), str) or not dep.get("variableName"):
+                    errors.append(f"H24: ({r},{c}) dependency 的 field 必须为字符串且 variableName 必填")
+                if dep.get("fieldProp") != "any":
+                    errors.append(f"H24: ({r},{c}) dependency.fieldProp 必须为 'any'")
             for action in ac:
                 if action.get("actionType") != "value":
                     errors.append(f"H24: ({r},{c}) actionType 应为 'value'")
@@ -736,18 +881,22 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
                 if "\r\n" not in code and "\n" in code:
                     errors.append(f"H24: ({r},{c}) action 脚本含 \\n 而非 \\r\\n")
 
-    # H25: 签名控件事件检查
+    # H25: 只校验真正调用 nenr_sheetFormItem 的签名事件
     for (r, c), w in widgets.items():
         widget = w["widget"]
-        cl = widget.get("componentLogic", {})
-        events = cl.get("events")
-        if events:
-            focus_found = any(e.get("type") == "focus" and "beeReportBridge" in e.get("handler", "") for e in events)
-            dblclick_found = any(e.get("type") == "dblclick.native" and "beeReportBridge" in e.get("handler", "") for e in events)
+        events = widget.get("componentLogic", {}).get("events", [])
+        signature_events = [e for e in events
+                            if "nenr_sheetFormItem" in e.get("handler", "")]
+        if signature_events:
+            focus_found = any(e.get("type") == "focus" for e in signature_events)
+            dblclick_found = any(e.get("type") == "dblclick.native" for e in signature_events)
             if not focus_found:
-                errors.append(f"H25: ({r},{c}) events 缺少 focus 事件")
-            if not dblclick_found:
-                errors.append(f"H25: ({r},{c}) events 缺少 dblclick.native 事件")
+                errors.append(f"H25: ({r},{c}) 签名事件缺少 focus")
+            if widget.get("type", "").startswith("vant"):
+                if dblclick_found:
+                    errors.append(f"H25: ({r},{c}) PDA 签名不得添加 dblclick.native")
+            elif not dblclick_found:
+                errors.append(f"H25: ({r},{c}) PC 签名缺少 dblclick.native 事件")
 
     # H26: conditionAttribute 结构检查
     for cell in meta:
@@ -784,6 +933,58 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
     if page_print_format != "pdf":
         errors.append(f"H33: pageConfig.printFormat={page_print_format!r} 非法，必须固定为 'pdf'")
 
+    # H34: 平台、PDA 标准布局与字段类型
+    if platform not in ("PC", "PDA"):
+        errors.append(f"H34: platform={platform!r} 非法，必须为 PC 或 PDA")
+    elif platform == "PC":
+        for (r, c), w in widgets.items():
+            if w["widget"].get("type", "").startswith("vant"):
+                errors.append(f"H34: ({r},{c}) PC 表单不得混用 vant 控件")
+    else:
+        pda_types = {"vantInput", "vantSelect", "vantCheckboxgroup",
+                     "vantRadiogroup", "vantDateTimePicker"}
+        if n_cols != 2:
+            errors.append(f"H34: 常规 PDA 必须为2列，当前为{n_cols}列")
+        if merges:
+            errors.append("H34: 常规 PDA 不得包含合并单元格")
+        if total_w < 350 or total_w > 400:
+            errors.append(f"H34: PDA 列宽总和{total_w} 偏离375过多")
+        scope_by_name = {item.get("name"): item for item in sc if isinstance(item, dict)}
+        for (r, c), w in widgets.items():
+            widget = w["widget"]
+            wtype = widget.get("type")
+            if wtype not in pda_types:
+                errors.append(f"H34: ({r},{c}) PDA 使用了未适配控件 {wtype}")
+            if wtype == "vantCheckboxgroup":
+                sf = widget.get("scopeField", "")
+                scope_item = scope_by_name.get(sf)
+                if sf and (not scope_item or scope_item.get("type") != "array"
+                           or scope_item.get("defaultValue") != []):
+                    errors.append(f"H34: ({r},{c}) vantCheckboxgroup 的 scope 必须为 array/[]")
+        for cell in meta:
+            r, c = cell["row"], cell["col"]
+            if (cell.get("prop") != c or cell.get("borders") != {}
+                    or cell.get("hyperlink") != [] or cell.get("columnFilter") is not False):
+                errors.append(f"H34: ({r},{c}) PDA cell 缺少标准 prop/borders/hyperlink/columnFilter")
+
+    # H35: 动态行显隐必须有初始状态，且不得遗留调试代码
+    afterload_script = next((e.get("expressionStatement", "") for e in ec
+                             if e.get("eventName") == "afterload"), "")
+    for (r, c), w in widgets.items():
+        events = w["widget"].get("componentLogic", {}).get("events", [])
+        for event in events:
+            handler = event.get("handler", "")
+            if event.get("type") != "change" or not (
+                    "$$setRowsVisible" in handler or "$$setRowsHidden" in handler):
+                continue
+            if "$$setRowsVisible" not in handler or "$$setRowsHidden" not in handler:
+                errors.append(f"H35: ({r},{c}) change 必须同时处理显示与隐藏分支")
+            if not ("$$setRowsVisible" in afterload_script
+                    or "$$setRowsHidden" in afterload_script):
+                errors.append(f"H35: ({r},{c}) afterload 未设置初始行显隐状态")
+            if "debugger" in handler or "console." in handler:
+                errors.append(f"H35: ({r},{c}) 行显隐脚本不得包含调试代码")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -791,7 +992,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields):
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H33 全部满足 ===")
+        print("=== 验证通过: H1-H35 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -815,26 +1016,27 @@ def package(data, form_cd, form_version, output_dir):
 FORM_CD = ""           # 完整表单编码, 如 "nenr_form_health_education" (H30)
 FORM_NA = ""           # 表单名称, 如 "老年医学科健康教育指导单"
 FORM_VERSION = "1.0.1"  # 固定版本号, 禁止修改 (H31)
+PLATFORM = "PC"         # "PC" 或 "PDA" (H34)
 REFERENCE_ZIP = r"c:\Users\John\Documents\AweSun Files\nenr_form_oxytocin_record-1.0.1.zip"
 OUTPUT_DIR = r"c:\Users\John\Documents\AweSun Files"
 
-# 患者信息字段 (H13: 总列数 = len × 2)
+# PC 患者信息字段 (H13: 总列数 = len × 2；PDA 不参与列数计算)
 PATIENT_FIELDS = []  # 如 ["床号","姓名","性别","年龄","住院号","入院诊断"]
 
 # source 行数据: 每行为 [str|null, ...] (H2)
 SOURCE_ROWS = []
 
-# 合并区域: [(sr,sc,er,ec), ...] (H7)
+# 合并区域: [(sr,sc,er,ec), ...] (H7；常规 PDA 必须为 [])
 MERGE_AREAS = []
 
-# 行高: 精确值, 空行=11.5 (H18)
+# 行高: PC 空行=11.5 (H18)；PDA 普通行=24，多行按内容增加 (H34)
 ROW_HEIGHTS = []
 
-# 列宽: 精确值含小数, 总和~768 (H17)
+# 列宽: PC 总和~768 (H17)；PDA 两列总和约375 (H34)
 COL_WIDTHS = []
 
 # 控件: {(r,c): {"widget": widget_obj, "v"?:..., "t"?:...}}
-# 用 w_input/w_checkbox/w_date/w_select/w_radio 构建
+# PC 用 w_input/w_checkbox/w_date/w_select/w_radio；PDA 用对应 w_vant_* 函数
 WIDGETS = {}
 
 # 标题行 (H15: 自动设ht=2, bl=1, fs=14)
@@ -846,7 +1048,9 @@ HEADER_ROWS = set()   # 如 {2, 4}
 # 多行文本单元格 (H14: 自动设tb=3)
 MULTILINE_CELLS = set()  # 如 {(6,0), (7,0), ...}
 
-# beforerender 脚本 (H5: 自动填充到eventConfig)
+# 报表事件脚本 (H5/H35): 支持 beforeload/afterload/beforerender/afterrender/
+# beforeprint/afterprint/childReportMsg；旧参数仅保留 beforerender 兼容
+EVENT_SCRIPTS = {}  # 如 {"afterload": rows_afterload_hidden([10, 11, 12])}
 BEFORERENDER_SCRIPT = ""
 
 # 额外 scopeConfig 字段 (如空 scopeField 的控件不自动生成)
@@ -861,11 +1065,12 @@ if __name__ == "__main__":
     # 1. 构建各部分
     source = build_source(SOURCE_ROWS)
     merges = build_merges(MERGE_AREAS)
-    meta = build_meta(source, MERGE_AREAS, WIDGETS, TITLE_ROWS, HEADER_ROWS, MULTILINE_CELLS)
+    meta = build_meta(source, MERGE_AREAS, WIDGETS, TITLE_ROWS, HEADER_ROWS,
+                      MULTILINE_CELLS, PLATFORM)
     resized = build_resized(ROW_HEIGHTS, COL_WIDTHS)
     report_config = load_report_config(REFERENCE_ZIP)
     report_config["scopeConfig"] = build_scope_config(WIDGETS, EXTRA_SCOPE_FIELDS)
-    report_config["eventConfig"] = build_event_config(BEFRERENDER_SCRIPT)
+    report_config["eventConfig"] = build_event_config(BEFORERENDER_SCRIPT, EVENT_SCRIPTS)
 
     # 2. 组装 template
     template_obj = build_template(source, meta, merges, resized, report_config)
@@ -873,8 +1078,8 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H33
-    verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS)
+    # 4. 验证 H1-H35
+    verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS, PLATFORM)
 
     # 5. 打包 ZIP
     package(data, FORM_CD, FORM_VERSION, OUTPUT_DIR)
@@ -959,7 +1164,7 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | `autoLineHeightType` | `"1"` | 自动行高类型 |
 
 ### scopeConfig type 字段
-- 三种值: `"string"` (input/datePicker/select/radiogroup), `"array"` (checkboxgroup), `"object"` (nurseFormContext)
+- 三种值: `"string"` (input/datePicker/select/radiogroup 及对应 vant 控件), `"array"` (checkboxgroup/vantCheckboxgroup), `"object"` (nurseFormContext)
 - `"string"` 的 `defaultValue` 为 `""`（可省略）
 - `"array"` 的 `defaultValue` 为 `[]`
 - `"object"` 的 `defaultValue` 为 `{}`
@@ -991,13 +1196,21 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | checkboxgroup | `w_checkbox()` | `enableMax/max` 模拟单选, `itemSpacing` 控制间距 |
 | datePicker | `w_date()` | 有 `t:1,v:"占位"` (H20, 不用datePickerQuick) |
 | select | `w_select()` | 本地选项, `dataSource.type:"1"` |
-| radiogroup | `w_radio()` | `vertical` 控制排列方向 |
+| radiogroup | `w_radio()` | `vertical` 控制方向，可选 `allow_deselect`/`item_spacing` |
 | **字典 select** | `w_select_dict()` | 引用系统字典 (H27), `dataSource.type:"3"`, 用于婚姻/民族/职业等 |
 | **字典 checkbox** | `w_checkbox_dict()` | 引用系统字典 (H27) |
 | **字典 radio** | `w_radio_dict()` | 引用系统字典 (H27) |
 | 计算input | `w_calc_input()` | 只读, `interaction.actionConfig` 自动计算 (H24) |
 | 计算select | `w_calc_select()` | 只读, `interaction.actionConfig` 按阈值分级 (H24) |
-| 护士签名 | `w_signature()` | `events` 含 focus+dblclick 弹出表单项 (H25) |
+| 通用计算 | `add_calculation()` | 给现有 PC/PDA input/select/checkbox 控件附加计算 (H24) |
+| PDA input | `w_vant_input()` | `vantInput`，支持 placeholder/readonly/clearable (H34) |
+| PDA date | `w_vant_date()` | `vantDateTimePicker`，`mode="datetime"/"date"` (H34) |
+| PDA checkbox | `w_vant_checkbox()` | `direction` 控制方向，`max_val=1` 限制单选 (H34) |
+| PDA radio | `w_vant_radio()` | `direction`，可选 `allow_deselect`/`item_spacing` (H34) |
+| PDA select | `w_vant_select()` | `vantSelect` 本地选项 (H34) |
+| PC 护士签名 | `w_signature()` | `events` 含 focus+dblclick 弹出表单项 (H25) |
+| PDA 护士签名 | `w_vant_signature()` | `events` 仅含 focus (H25/H34) |
+| 行动态显隐 | `add_change_event()` + `row_visibility_handler()` | 配合 `rows_afterload_hidden()` 和 `EVENT_SCRIPTS` (H35) |
 | 条件属性 | `condition_attribute()` | 添加到 cell, `conditionAttribute` 背景图+内容显隐 (H26) |
 
 **字典控件选择规则（H27）**：语义命中 `DICT_CODES` 表 → 用 `w_*_dict()`；未命中 → 用 `w_*()` 本地选项
