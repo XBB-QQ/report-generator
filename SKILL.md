@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.10
+# Report Generator Skill - v8.11
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H37
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H38
 5. **打包 ZIP** → 输出 `<cd>-1.0.1.zip`
 
-## 硬性约束（H1-H37，违反即报错或显示异常）
+## 硬性约束（H1-H38，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -215,16 +215,32 @@ description: "智能护理表单模板生成器"
   - 多选一律 `enableMax: false`（H36）；仅单选形态的 checkboxgroup 才允许 `enableMax: true` 且 `max: 1`
   - `verify()` 必须校验：题干含单选限制语却使用非单选形态、题干含多选限制语却使用单选形态，均直接报错并停止打包
 
+### 选项唯一性 H38（checkboxgroup 选项 value）
+
+- **H38**: 同一 `checkboxgroup` / `vantCheckboxgroup` 内所有选项的 `value` 必须唯一，禁止多个选项共用同一 `value`
+  - 典型错误：“来源清单”A–I 全部写成 `value: "1"`，勾选任意一项会同时选中所有同值选项，且按个数计分会把 1 个来源算成 9 个
+```json
+// 错误：九个选项共用 value "1"，一选全选
+{"label": "A、配偶", "value": "1"}
+{"label": "B、其他家人", "value": "1"}
+// 正确：每个选项使用唯一标识
+{"label": "A、配偶", "value": "A"}
+{"label": "B、其他家人", "value": "B"}
+```
+  - 每个选项必须使用可区分且稳定的唯一标识（如 `A`～`I`、`1`～`n`、`opt_1`）；计分逻辑按选中个数计算时，不依赖 `value` 的数值
+  - 本规则只校验本地选项（`dataSource.type = "1"`）；字典数据源（`type = "3"`）的选项由系统下发，不做重复校验
+  - `verify()` 必须解析本地 `dataMaker` 并检查重复 `value`，发现重复直接报错并停止打包
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H37。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H38。
 
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.10
+护理表单报表生成器模板 v8.11
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H37 由 helper 函数自动保障。
+所有硬性约束 H1-H38 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -788,7 +804,7 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 # --- 验证函数 ---
 
 def verify(data, source, meta, merges, resized, widgets, patient_fields, platform="PC"):
-    """验证所有硬性约束 H1-H37；platform 默认 PC，保持旧调用兼容"""
+    """验证所有硬性约束 H1-H38；platform 默认 PC，保持旧调用兼容"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -1071,6 +1087,28 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
         if has_multi and is_single:
             errors.append(f"H37: ({r},{c}) 题干含多选限制语，但控件使用了单选形态")
 
+    # H38: 同一 checkboxgroup 内选项 value 必须唯一
+    for cell in meta:
+        widget = cell.get("widget")
+        if not isinstance(widget, dict) or widget.get("type") not in ("checkboxgroup", "vantCheckboxgroup"):
+            continue
+        r, c = cell["row"], cell["col"]
+        ds = widget.get("componentLogic", {}).get("dataSource", {})
+        if str(ds.get("type")) != "1":
+            continue
+        dm = ds.get("dataMaker", [])
+        try:
+            options = json.loads(dm) if isinstance(dm, str) else dm
+        except Exception:
+            errors.append(f"H38: ({r},{c}) dataMaker 无法解析，无法校验选项 value 唯一性")
+            continue
+        if not isinstance(options, list):
+            continue
+        values = [str(o.get("value")) for o in options if isinstance(o, dict)]
+        dup = sorted({v for v in values if values.count(v) > 1})
+        if dup:
+            errors.append(f"H38: ({r},{c}) 选项 value 重复 {dup}，勾选一项会同时选中所有同值选项")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -1078,7 +1116,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H37 全部满足 ===")
+        print("=== 验证通过: H1-H38 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -1164,7 +1202,7 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H37
+    # 4. 验证 H1-H38
     verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS, PLATFORM)
 
     # 5. 打包 ZIP

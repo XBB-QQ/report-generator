@@ -1,10 +1,10 @@
 # report-generator
 
-智能护理表单模板生成器，当前版本 **v8.10**。
+智能护理表单模板生成器，当前版本 **v8.11**。
 
 本仓库是一个 Trae Skill，用于根据 PDF、DOCX 等源文件生成护理表单 `.report`，并打包为可导入的 ZIP；也可在严格限制修改范围的前提下修复已有模板。
 
-> 完整的生成规则、代码模板和 H1-H37 硬性约束以 [SKILL.md](SKILL.md) 为准。
+> 完整的生成规则、代码模板和 H1-H38 硬性约束以 [SKILL.md](SKILL.md) 为准。
 
 ## 核心能力
 
@@ -14,7 +14,7 @@
 - 支持 PC 与 PDA 双平台：PDA 使用 vantInput 等控件和两列布局，禁止混用。
 - 支持评分计算、护士签名事件、条件显隐和系统字典数据源。
 - 支持根据控件值动态显示/隐藏明细行（change 事件 + afterload 初始状态）。
-- 通过 `verify()` 在打包前校验 H1-H37，发现违规配置直接停止。
+- 通过 `verify()` 在打包前校验 H1-H38，发现违规配置直接停止。
 - 修改已有模板时进行最小化差异控制，不做未经授权的额外调整。
 
 ## 仓库结构
@@ -48,7 +48,7 @@ report-generator/
 解析源文件
   → 填写表单定义
   → 构建 source/meta/merges/resized/widgets
-  → verify() 校验 H1-H37
+  → verify() 校验 H1-H38
   → package() 打包 ZIP
 ```
 
@@ -97,6 +97,7 @@ report-generator/
 | H35 | 动态行显隐 | change 事件与 afterload 初始状态必须同时配置，禁止调试代码 |
 | H36 | 最大勾选 | `checkboxgroup.attribute.enableMax` 必须显式写入且默认 `false`；`true` 时必须配置正整数 `max` |
 | H37 | 单选/多选判定 | 限制语优先、选项语义其次；状态类单选用 radiogroup，评分/等级类单选用 checkboxgroup(max=1)，多选一律 enableMax=false |
+| H38 | 选项唯一性 | 同一 checkboxgroup 内所有选项 `value` 必须唯一，重复会导致勾选一项时全部选中 |
 
 完整细则及示例见 [SKILL.md](SKILL.md)。
 
@@ -214,4 +215,5 @@ pip install pdfplumber python-docx
 - H35 会检查行显隐的 change 事件与 afterload 初始状态成对存在。
 - H36 会检查 `checkboxgroup.attribute.enableMax` 是否显式存在、是否为布尔值，以及 `enableMax=true` 时 `max` 是否为正整数。
 - H37 会检查题干限制语与控件形态是否一致：含“只选一项”却用多选形态、含“可多选”却用单选形态，均报错。
+- H38 会解析本地 `dataMaker`，检查 checkboxgroup 选项 `value` 是否重复，重复即报错。
 - 生成或修改模板后，还应在目标业务系统中进行实际导入和运行验证。
