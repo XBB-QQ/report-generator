@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.8
+# Report Generator Skill - v8.9
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H35
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H36
 5. **打包 ZIP** → 输出 `<cd>-1.0.1.zip`
 
-## 硬性约束（H1-H35，违反即报错或显示异常）
+## 硬性约束（H1-H36，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -175,16 +175,40 @@ description: "智能护理表单模板生成器"
   - 默认隐藏时，将 `rows_afterload_hidden(rows)` 放入 `EVENT_SCRIPTS["afterload"]`；行号使用与 source/meta 一致的从 0 开始索引
   - 显隐脚本不得包含 `debugger`、调试日志、被注释的失效分支；多选控件需先明确数组值比较逻辑，不能直接套用单值 `$$value` 比较
 
+### 最大勾选类 H36（checkboxgroup.attribute.enableMax）
+
+- **H36**: `checkboxgroup` 必须在 `attribute` 中显式写入 `enableMax`，默认值为 `false`
+  - 属性路径：`template`（JSON 字符串）→ `reportReference.meta[i].widget.attribute.enableMax`
+  - 常规多选控件一律 `enableMax: false`，不得启用最大勾选限制
+  - 仅当业务确实需要限制最多勾选数时，才可设 `enableMax: true`，且必须同时给出合法 `max`（正整数，`>= 1`）；`enableMax: true` 但缺少 `max` 或 `max` 非法直接报错
+  - `enableMax: false` 时不写入 `max`，避免保留无意义的限制字段
+  - 本规则适用于 PC `checkboxgroup`；PDA `vantCheckboxgroup` 按 H34 使用 `attribute.max`，不写 `enableMax`
+  - 标准结构示例：
+    ```json
+    {
+      "type": "checkboxgroup",
+      "attribute": {
+        "disabled": false,
+        "vertical": false,
+        "min": 0,
+        "enableMax": false,
+        "props": { "label": "label", "value": "value", "disabled": "disabled" },
+        "itemSpacing": 30
+      }
+    }
+    ```
+  - `verify()` 必须在打包前检查：缺失 `enableMax`、类型不是布尔值、`enableMax: true` 缺少合法 `max`，均直接报错并停止打包
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H35。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H36。
 
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.8
+护理表单报表生成器模板 v8.9
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H35 由 helper 函数自动保障。
+所有硬性约束 H1-H36 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -241,7 +265,7 @@ def w_input(scope_field, identifier, name, placeholder="", readonly=False,
 
 def w_checkbox(scope_field, identifier, name, options, vertical=False,
                enable_max=False, max_val=1, item_spacing=None, rowstart=1, rowend=1):
-    """构建 checkboxgroup 控件 (H22: 选项>=3时设itemSpacing)"""
+    """构建 checkboxgroup 控件 (H22: 选项>=3时设itemSpacing, H36: enableMax 默认 false)"""
     attr = {"disabled": False, "vertical": vertical, "min": 0,
             "enableMax": enable_max,
             "props": {"label": "label", "value": "value", "disabled": "disabled"}}
@@ -407,7 +431,7 @@ def w_select_dict(scope_field, identifier, name, dict_code, rowstart=1, rowend=1
 
 def w_checkbox_dict(scope_field, identifier, name, dict_code, vertical=False,
                     rowstart=1, rowend=1):
-    """构建引用系统字典的 checkboxgroup 控件 (H27)"""
+    """构建引用系统字典的 checkboxgroup 控件 (H27, H36: enableMax 默认 false)"""
     return {"type": "checkboxgroup", "attribute": {
         "disabled": False, "vertical": vertical, "min": 0, "enableMax": False,
         "props": {"label": "text", "value": "cd", "disabled": "disabled"}
@@ -748,7 +772,7 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 # --- 验证函数 ---
 
 def verify(data, source, meta, merges, resized, widgets, patient_fields, platform="PC"):
-    """验证所有硬性约束 H1-H35；platform 默认 PC，保持旧调用兼容"""
+    """验证所有硬性约束 H1-H36；platform 默认 PC，保持旧调用兼容"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -985,6 +1009,22 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
             if "debugger" in handler or "console." in handler:
                 errors.append(f"H35: ({r},{c}) 行显隐脚本不得包含调试代码")
 
+    # H36: checkboxgroup 的 attribute.enableMax 必须存在且默认 false
+    for cell in meta:
+        widget = cell.get("widget")
+        if not isinstance(widget, dict) or widget.get("type") != "checkboxgroup":
+            continue
+        attr = widget.get("attribute", {})
+        r, c = cell["row"], cell["col"]
+        if "enableMax" not in attr:
+            errors.append(f"H36: ({r},{c}) checkboxgroup 缺少 attribute.enableMax，默认必须为 false")
+        elif not isinstance(attr["enableMax"], bool):
+            errors.append(f"H36: ({r},{c}) attribute.enableMax={attr['enableMax']!r} 必须为布尔值")
+        elif attr["enableMax"] is True:
+            max_val = attr.get("max")
+            if not isinstance(max_val, int) or isinstance(max_val, bool) or max_val < 1:
+                errors.append(f"H36: ({r},{c}) enableMax=true 时必须配置正整数 max")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -992,7 +1032,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H35 全部满足 ===")
+        print("=== 验证通过: H1-H36 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -1078,7 +1118,7 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H35
+    # 4. 验证 H1-H36
     verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS, PLATFORM)
 
     # 5. 打包 ZIP
@@ -1193,7 +1233,7 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | 类型 | 函数 | 特点 |
 |------|------|------|
 | input | `w_input()` | `simplify:true` (默认), `clearable` 因报表而异, readonly 时 `clearable:false` |
-| checkboxgroup | `w_checkbox()` | `enableMax/max` 模拟单选, `itemSpacing` 控制间距 |
+| checkboxgroup | `w_checkbox()` | `enableMax` 默认 `false` (H36), `itemSpacing` 控制间距 |
 | datePicker | `w_date()` | 有 `t:1,v:"占位"` (H20, 不用datePickerQuick) |
 | select | `w_select()` | 本地选项, `dataSource.type:"1"` |
 | radiogroup | `w_radio()` | `vertical` 控制方向，可选 `allow_deselect`/`item_spacing` |
@@ -1295,7 +1335,8 @@ reportConfig:                         # H8 从催产素模板深拷贝
 - checkboxgroup 用 `vertical:true` 纵向排列
 
 ### 模拟单选（如 Bishop 评分）
-- `enableMax:true, max:1` 让 checkboxgroup 表现为单选
+- 非必要不使用；`enableMax` 默认必须为 `false`（H36）
+- 确需限制时：`enableMax:true, max:1` 让 checkboxgroup 表现为单选，`max` 必须为正整数
 
 ### 纯展示 checkbox
 - `scopeField=""`（H21），不出现在 scopeConfig 中
