@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.9
+# Report Generator Skill - v8.10
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H36
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H37
 5. **打包 ZIP** → 输出 `<cd>-1.0.1.zip`
 
-## 硬性约束（H1-H36，违反即报错或显示异常）
+## 硬性约束（H1-H37，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -199,16 +199,32 @@ description: "智能护理表单模板生成器"
     ```
   - `verify()` 必须在打包前检查：缺失 `enableMax`、类型不是布尔值、`enableMax: true` 缺少合法 `max`，均直接报错并停止打包
 
+### 选择类 H37（单选/多选判定与控件分流）
+
+- **H37**: 选择类控件必须先判定“单选/多选”，再按语义选择控件类型；判定顺序与落地方式固定如下
+  1. **显式限制语优先**：题干、表头或脚注含“可多选/多选/可选多项/可同时选择/有几个来源就计几分” → 多选；含“只选一项/仅选一项/选择一项/单选” → 单选
+  2. **无显式限制语时按选项语义判定**：
+     - 互斥状态（无-有、正常-异常、阴性-阳性、清楚-嗜睡-未清醒、已建立-未建立）→ 单选
+     - 有序等级/评分条目（1～5 级、无-轻-中-重、从不-偶尔-经常-总是，选项与分值一一对应）→ 单选
+     - 可并列清单（来源、物品、症状、措施、导管类型、部位、合并症、耐药菌）→ 多选
+     - “无/未见/其他”与若干并列项同时出现 → 多选（“无”是互斥清理项，不是单选信号）
+  3. **单选落地分流**（同一表单内同类题目保持一致，不得混用两种单选形态）：
+     - 二态/三态状态判断、选项为文字状态 → `radiogroup`（PDA 用 `vantRadiogroup`）
+     - 等级/评分条目、选项对应分值或等级梯度 → `checkboxgroup` + `enableMax: true` + `max: 1`（PDA 用 `vantCheckboxgroup` + `max: 1`）
+  4. **仍无法判定时**：停止并向用户确认，不得凭语感猜测
+  - 多选一律 `enableMax: false`（H36）；仅单选形态的 checkboxgroup 才允许 `enableMax: true` 且 `max: 1`
+  - `verify()` 必须校验：题干含单选限制语却使用非单选形态、题干含多选限制语却使用单选形态，均直接报错并停止打包
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H36。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H37。
 
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.9
+护理表单报表生成器模板 v8.10
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H36 由 helper 函数自动保障。
+所有硬性约束 H1-H37 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -772,7 +788,7 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 # --- 验证函数 ---
 
 def verify(data, source, meta, merges, resized, widgets, patient_fields, platform="PC"):
-    """验证所有硬性约束 H1-H36；platform 默认 PC，保持旧调用兼容"""
+    """验证所有硬性约束 H1-H37；platform 默认 PC，保持旧调用兼容"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -1025,6 +1041,36 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
             if not isinstance(max_val, int) or isinstance(max_val, bool) or max_val < 1:
                 errors.append(f"H36: ({r},{c}) enableMax=true 时必须配置正整数 max")
 
+    # H37: 单选/多选限制语与控件形态一致性（就近题干 + 控件名）
+    single_kw = ("只选一项", "仅选一项", "选择一项", "选一项", "单选", "只选1项")
+    multi_kw = ("可多选", "多选", "可选多项", "可多项", "有几个来源", "可同时选择")
+
+    def _question_text(r, c):
+        row = source[r]
+        left = [v for v in row[:c] if isinstance(v, str) and v.strip()]
+        if left:
+            return left[-1]
+        return "".join(v for v in row if isinstance(v, str))
+
+    for (r, c), w in widgets.items():
+        widget = w["widget"]
+        wtype = widget.get("type")
+        if wtype not in ("radiogroup", "checkboxgroup", "vantRadiogroup", "vantCheckboxgroup"):
+            continue
+        qtext = _question_text(r, c) + (widget.get("name") or "")
+        has_single = any(k in qtext for k in single_kw)
+        has_multi = any(k in qtext for k in multi_kw)
+        if has_single and has_multi:
+            errors.append(f"H37: ({r},{c}) 题干同时含单选与多选限制语，需人工确认")
+            continue
+        attr = widget.get("attribute", {})
+        is_single = wtype in ("radiogroup", "vantRadiogroup") or (
+            attr.get("enableMax") is True and attr.get("max") == 1)
+        if has_single and not is_single:
+            errors.append(f"H37: ({r},{c}) 题干含单选限制语，但 {wtype} 不是单选形态")
+        if has_multi and is_single:
+            errors.append(f"H37: ({r},{c}) 题干含多选限制语，但控件使用了单选形态")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -1032,7 +1078,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H36 全部满足 ===")
+        print("=== 验证通过: H1-H37 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -1118,7 +1164,7 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H36
+    # 4. 验证 H1-H37
     verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS, PLATFORM)
 
     # 5. 打包 ZIP
@@ -1270,9 +1316,18 @@ reportConfig:                         # H8 从催产素模板深拷贝
 
 ### DOCX 解析
 - 使用 `python-docx`，`doc.paragraphs` 提取标题/列表，`doc.tables` 提取结构化内容
-- `□` 符号 → checkboxgroup 选项
+- `□` / `○` 符号不得直接决定控件类型，必须按 H37 结合题干限制语和选项语义判定
 - `____` 或空白 → input 控件
 - 页面尺寸: `doc.sections[0].page_width` (EMU, 914400 EMU = 1 inch = 25.4mm)
+
+### 选择项解析规则（H37）
+
+- 选项按 `A/B/C`、`①②③`、`1./2./3.`、符号位置等边界切分，**不得按空白或换行切分**，否则会把一个选项拆成两个或把两个选项合并
+- 跨行续行并入上一个选项，题干不得从中间截断
+- 限制语必须全文扫描：题干括号、表头、脚注都可能出现“可多选/只选一项”，不能只看控件所在单元格
+- 剥离 `□`/`○`/`◇`/`☑` 前缀后写入 label，但符号与原始文本要保留为判定证据
+- 一行多选项时按符号位置切分后合成一个控件；每格一个选项时，先判断是“一格一选项”评分表还是“一格一控件”的独立字段
+- 判定完成后在表单定义区记录依据（题干原文 + 判定类型），便于复核，不得只凭语感选择控件
 
 ### 解析后填入模板
 1. 识别患者信息字段 → 填 `PATIENT_FIELDS`（H13 决定列数）
@@ -1335,8 +1390,9 @@ reportConfig:                         # H8 从催产素模板深拷贝
 - checkboxgroup 用 `vertical:true` 纵向排列
 
 ### 模拟单选（如 Bishop 评分）
-- 非必要不使用；`enableMax` 默认必须为 `false`（H36）
-- 确需限制时：`enableMax:true, max:1` 让 checkboxgroup 表现为单选，`max` 必须为正整数
+- 按 H37 分流：二/三态状态判断用 `radiogroup`；等级/评分条目才用 `checkboxgroup(max=1)`
+- `enableMax` 默认必须为 `false`（H36）；等级/评分条目启用时固定 `enableMax:true, max:1`
+- 同一表单内不得同时混用 `radiogroup` 与 `checkboxgroup(max=1)` 表达同类单选题目
 
 ### 纯展示 checkbox
 - `scopeField=""`（H21），不出现在 scopeConfig 中
