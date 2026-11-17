@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.13
+# Report Generator Skill - v8.14
 
 ## 使用流程
 
@@ -29,7 +29,11 @@ description: "智能护理表单模板生成器"
   - 非空脚本通过 `EVENT_SCRIPTS` 按 `eventName` 注入；`beforerender_script` 参数仅用于兼容原有调用
 - **H6**: `resized.rows`/`resized.cols` 元素必须是纯数字，`len(rows)` = `len(source)`，`len(cols)` = 每行列数
 - **H7**: `merges` 元素必须是对象 `{startRow, startColumn, endRow, endColumn}`，不允许数组
-- **H8**: `reportConfig` 必须从已验证模板（催产素报表 ZIP）深拷贝 14 个标准字段，只允许替换 `scopeConfig`/`eventConfig`，以及按 H33 将 `pageConfig.printFormat` 固定为 `"pdf"`；不可自行构造或缩减
+- **H8**: `reportConfig` 必须用 `build_report_config()` 生成，禁止手写、缩减或深拷贝旧 AI 生成模板（旧格式 `functionConfig={}`、`engineConfig={}`、`serviceConfig` 3 键会在运行时触发 `forEach`/`concat` 报错）
+  - 基线固定为平台现行模板（`fall_risk_judgment-1.0.9`），14 个标准字段齐全
+  - 优先沿用目标表单原生配置：`NATIVE_CONFIG_ZIP` 指向的 ZIP 中 `reportConfig`，仅当字段通过 `REPORT_CONFIG_SHAPES` 形态校验时才整字段沿用，否则回退基线
+  - 形态硬要求：`pageConfig` 含 `fixedColWidthInNormal`；`functionConfig` 必须是列表 `[]`；`engineConfig` 含 `enable/pageSize/showTotalPage/apiPagination`；`serviceConfig` 含 7 个标准键
+  - 只允许替换 `scopeConfig`/`eventConfig`，以及按 H33 固定 `pageConfig.printFormat = "pdf"`
 
 ### 内容类 H9-H14（单元格逻辑）
 
@@ -255,7 +259,7 @@ description: "智能护理表单模板生成器"
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.13
+护理表单报表生成器模板 v8.14
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
 所有硬性约束 H1-H39 由 helper 函数自动保障。
 """
@@ -787,15 +791,41 @@ def build_resized(row_heights, col_widths):
     """构建 resized (H6: 纯数字)"""
     return {"rows": list(row_heights), "cols": list(col_widths)}
 
-def load_report_config(reference_zip_path):
-    """从已验证模板深拷贝 reportConfig (H8)，并按 H33 固定打印格式"""
-    with zipfile.ZipFile(reference_zip_path, 'r') as z:
+# --- H8: reportConfig 基线 (取自系统现行模板 fall_risk_judgment-1.0.9) ---
+
+REPORT_CONFIG_BASELINE_JSON = r'''{"pageConfig":{"direction":"vertical","pagePadding":{"top":0,"left":0,"bottom":0,"right":0},"pageHeader":0,"pageFooter":0,"pageW":210,"pageH":297,"unit":"millimeter","pagingOrder":"rowColumn","previewAlign":"center","autoLineHeightType":"1","horizontalCenter":false,"verticalCenter":false,"startPageNumber":1,"autoAdjust":"rowHeight","pageHeaderConfig":[],"pageFooterConfig":[{"name":"默认页","value":"0","checked":true,"disabled":true,"divider":true,"position":"Right","printing":true,"regionLeft":[],"regionCenter":[],"regionRight":[]},{"name":"首页","value":"1","checked":false,"disabled":false,"divider":false,"position":"Left","printing":true,"regionLeft":[],"regionCenter":[],"regionRight":[]},{"name":"最后一页","value":"2","checked":false,"disabled":false,"divider":false,"position":"Left","printing":true,"regionLeft":[],"regionCenter":[],"regionRight":[]},{"name":"奇数页","value":"3","checked":false,"disabled":false,"divider":false,"position":"Left","printing":true,"regionLeft":[],"regionCenter":[],"regionRight":[]},{"name":"偶数页","value":"4","checked":false,"disabled":false,"divider":false,"position":"Left","printing":true,"regionLeft":[],"regionCenter":[],"regionRight":[]}],"pageSizeValue":"210x297","pageSizeConf":"predefine","printMode":"server","printFormat":"pdf","bbPlaceholder":true,"needFillByRow":false,"fillBy":0,"fixedColWidthInNormal":false,"withPageSize":false},"splitLayout":{"enable":false,"mode":"","condition":0,"splitCount":0,"splitArea":"","copyIndex":"","fillSpace":false},"headerRepeat":false,"footerRepeat":false,"headerFrozen":false,"followUpPrintOpt":{"fuCol":{"isEnabled":false,"start":1,"end":1},"fuRow":{"isEnabled":false,"start":1,"end":1},"offset":10,"offsetPosition":["left"]},"scopeConfig":[],"searchBarConfig":{"form":{},"formDesc":{"fields":{},"lifeCycle":{"created":"","mounted":"","beforeDestroy":"","destroyed":""},"scope":[],"layout":{"layoutMode":"1","width":"","height":"","labelWidth":"","widthMode":"0","labelPosition":"left","formSize":"small","componentLogic":{"fromDic":"0"},"withBorder":false,"padding":{"top":0,"right":0,"bottom":0,"left":0},"noDataWithoutSearch":false},"widgets":[]}},"eventConfig":[],"serviceConfig":{"inputsType":"1","outputsFilterScript":"","requestHeaderScript":"","serverDbConfig":[],"inputs":[],"outputs":[],"datasourceType":""},"headerOptions":{"print":true,"showPrintConf":true,"printCurrent":true,"pdf":true,"excel":true,"pagination":true,"csv":false,"show":true},"printOptions":{"printName":"","duplex":"simplex","pageState":"","page":"","printMode":"server","printFormat":"html","pl":"portrait","popWindow":false,"printType":"electron","zoom":"noscale","asPDF":false,"mostOnePrint":100},"functionConfig":[],"engineConfig":{"enable":false,"pageSize":10,"showTotalPage":false,"apiPagination":{"pageNoPath":"","pageSizePath":"","totalPath":""}}}'''
+
+# 关键字段形态要求: 不符合时回退基线, 避免旧格式配置触发 forEach/concat 运行时报错
+REPORT_CONFIG_SHAPES = {
+    "pageConfig": lambda v: isinstance(v, dict) and "fixedColWidthInNormal" in v,
+    "functionConfig": lambda v: isinstance(v, list),
+    "engineConfig": lambda v: isinstance(v, dict) and
+        {"enable", "pageSize", "showTotalPage", "apiPagination"} <= set(v),
+    "serviceConfig": lambda v: isinstance(v, dict) and
+        {"datasourceType", "inputsType", "inputs", "outputs",
+         "serverDbConfig", "outputsFilterScript", "requestHeaderScript"} <= set(v),
+}
+
+def load_native_report_config(zip_path):
+    """H8: 读取目标表单原生 reportConfig; 未提供时返回 None"""
+    if not zip_path:
+        return None
+    with zipfile.ZipFile(zip_path, 'r') as z:
         report_name = [n for n in z.namelist() if n.endswith('.report')][0]
         ref_data = json.loads(z.read(report_name).decode('utf-8'))
-    ref_template = json.loads(ref_data['template'])
-    report_config = copy.deepcopy(ref_template['reportConfig'])
-    report_config['pageConfig']['printFormat'] = 'pdf'  # H33
-    return report_config
+    return json.loads(ref_data['template'])['reportConfig']
+
+def build_report_config(scope_config, event_config, native_config=None):
+    """H8: 以平台现行配置为基线; 原生配置形态合规的字段优先沿用"""
+    config = json.loads(REPORT_CONFIG_BASELINE_JSON)
+    if native_config:
+        for key, shape_ok in REPORT_CONFIG_SHAPES.items():
+            if key in native_config and shape_ok(native_config[key]):
+                config[key] = copy.deepcopy(native_config[key])
+    config['scopeConfig'] = scope_config
+    config['eventConfig'] = event_config
+    config['pageConfig']['printFormat'] = 'pdf'  # H33
+    return config
 
 def build_scope_config(widgets, extra_fields=None):
     """构建 scopeConfig (H4: 列表, name匹配scopeField)
@@ -934,6 +964,10 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
     missing = required_fields - set(rc.keys())
     if missing:
         errors.append(f"H8: reportConfig 缺少字段: {missing}")
+    # H8: 关键字段形态必须与平台现行模板一致，否则运行时 forEach/concat 报错
+    for key, shape_ok in REPORT_CONFIG_SHAPES.items():
+        if key in rc and not shape_ok(rc[key]):
+            errors.append(f"H8: reportConfig.{key} 形态不合规（应为平台现行格式）")
 
     # H9 + H10: proxyCell 检查
     for cell in meta:
@@ -1229,7 +1263,8 @@ FORM_CD = ""           # 完整表单编码, 如 "nenr_form_health_education" (H
 FORM_NA = ""           # 表单名称, 如 "老年医学科健康教育指导单"
 FORM_VERSION = "1.0.1"  # 固定版本号, 禁止修改 (H31)
 PLATFORM = "PC"         # "PC" 或 "PDA" (H34)
-REFERENCE_ZIP = r"c:\Users\John\Documents\AweSun Files\nenr_form_oxytocin_record-1.0.1.zip"
+# 可选: 目标表单原生模板 ZIP (H8: 仅沿用形态合规的配置字段；留空则全部用基线)
+NATIVE_CONFIG_ZIP = ""
 OUTPUT_DIR = r"c:\Users\John\Documents\AweSun Files"
 
 # PC 患者信息字段 (H13: 总列数 = len × 2；PDA 不参与列数计算)
@@ -1285,9 +1320,10 @@ if __name__ == "__main__":
     meta = build_meta(source, MERGE_AREAS, WIDGETS, TITLE_ROWS, HEADER_ROWS,
                       MULTILINE_CELLS, PLATFORM)
     resized = build_resized(ROW_HEIGHTS, COL_WIDTHS)
-    report_config = load_report_config(REFERENCE_ZIP)
-    report_config["scopeConfig"] = build_scope_config(WIDGETS, EXTRA_SCOPE_FIELDS)
-    report_config["eventConfig"] = build_event_config(BEFORERENDER_SCRIPT, EVENT_SCRIPTS)
+    report_config = build_report_config(
+        build_scope_config(WIDGETS, EXTRA_SCOPE_FIELDS),
+        build_event_config(BEFORERENDER_SCRIPT, EVENT_SCRIPTS),
+        load_native_report_config(NATIVE_CONFIG_ZIP))
 
     # 2. 组装 template
     template_obj = build_template(source, meta, merges, resized, report_config)
@@ -1328,49 +1364,50 @@ reportReference:
   resized: {rows:[num], cols:[num]}  # H6 纯数字
   hidden: {rows:[], cols:[]}
   floatElements: []
-reportConfig:                         # H8 从催产素模板深拷贝
+reportConfig:                         # H8 由 build_report_config() 生成（平台现行基线）
   pageConfig, splitLayout, headerRepeat, footerRepeat,
   headerFrozen, followUpPrintOpt, scopeConfig, searchBarConfig,
   eventConfig, serviceConfig, headerOptions, printOptions,
   functionConfig, engineConfig       # 14个字段
 ```
 
-### reportConfig 标准字段值（从催产素模板深拷贝，不修改）
+### reportConfig 标准字段值（`build_report_config()` 输出，取自平台现行模板）
 | 字段 | 类型 | 标准值 |
 |------|------|--------|
-| `pageConfig` | dict(24) | 见下表 |
-| `splitLayout` | bool | `False` |
+| `pageConfig` | dict(25) | 见下表 |
+| `splitLayout` | dict(7) | `{"enable": False, "mode": "", "condition": 0, "splitCount": 0, "splitArea": "", "copyIndex": "", "fillSpace": False}` |
 | `headerRepeat` | bool | `False` |
 | `footerRepeat` | bool | `False` |
 | `headerFrozen` | bool | `False` |
-| `followUpPrintOpt` | bool | `False` |
+| `followUpPrintOpt` | dict(4) | `{"fuCol": {...}, "fuRow": {...}, "offset": 10, "offsetPosition": ["left"]}` |
 | `scopeConfig` | list | **替换**为当前表单的 |
 | `searchBarConfig` | dict(2) | `{"form": {}, "formDesc": {...}}` |
 | `eventConfig` | list(7) | **替换**为当前表单的 |
-| `serviceConfig` | dict(3) | `{"datasourceType": "3", "dbConfig": [], "inputsType": -1}` |
-| `headerOptions` | dict(7) | `{"print":True, "showPrintConf":True, "printCurrent":True, "pdf":True, "excel":True, "pagination":True, "show":False}` |
-| `printOptions` | dict(9) | `{"printName":"", "duplex":"simplex", "pageState":"", "page":"", "printMode":"server", "printFormat":"html", "pl":"portrait", "mostOnePrint":100, "printType":"electron"}` |
-| `functionConfig` | dict | `{}` (空) |
-| `engineConfig` | dict | `{}` (空) |
+| `serviceConfig` | dict(7) | `{"inputsType": "1", "outputsFilterScript": "", "requestHeaderScript": "", "serverDbConfig": [], "inputs": [], "outputs": [], "datasourceType": ""}` |
+| `headerOptions` | dict(8) | `{"print":True, "showPrintConf":True, "printCurrent":True, "pdf":True, "excel":True, "pagination":True, "csv":False, "show":True}` |
+| `printOptions` | dict(12) | `{"printName":"", "duplex":"simplex", "pageState":"", "page":"", "printMode":"server", "printFormat":"html", "pl":"portrait", "popWindow":False, "printType":"electron", "zoom":"noscale", "asPDF":False, "mostOnePrint":100}` |
+| `functionConfig` | list | `[]`（空列表，**不是** `{}`） |
+| `engineConfig` | dict(4) | `{"enable": False, "pageSize": 10, "showTotalPage": False, "apiPagination": {"pageNoPath":"", "pageSizePath":"", "totalPath":""}}` |
 
-### pageConfig 标准值（24个字段，全部报表一致）
+### pageConfig 标准值（25个字段，全部报表一致）
 | 字段 | 标准值 | 说明 |
 |------|--------|------|
 | `direction` | `"vertical"` | 打印方向 |
-| `pagePadding` | `{"top":0, "left":5, "bottom":0, "right":0}` | 页边距(mm) |
-| `pageHeader` | `4` | 页眉类型 |
+| `pagePadding` | `{"top":0, "left":0, "bottom":0, "right":0}` | 页边距(mm) |
+| `pageHeader` | `0` | 页眉类型 |
 | `pageFooter` | `0` | 页脚类型 |
 | `pageW` | `210` | A4 宽度(mm) |
 | `pageH` | `297` | A4 高度(mm) |
 | `unit` | `"millimeter"` | 单位 |
-| `pagingOrder` | `"columnRow"` | 分页顺序 |
+| `pagingOrder` | `"rowColumn"` | 分页顺序 |
 | `previewAlign` | `"center"` | 预览对齐 |
 | `horizontalCenter` | `False` | 水平居中 |
 | `verticalCenter` | `False` | 垂直居中 |
 | `startPageNumber` | `1` | 起始页码 |
 | `autoAdjust` | `"rowHeight"` | 自动调整 |
-| `pageHeaderConfig` | list(5) | 页眉配置(5种页类型) |
-| `pageFooterConfig` | `[]` | 页脚配置(空) |
+| `autoLineHeightType` | `"1"` | 自动行高类型 |
+| `pageHeaderConfig` | `[]` | 页眉配置(空) |
+| `pageFooterConfig` | list(5) | 页脚配置(5种页类型) |
 | `pageSizeValue` | `"210x297"` | 纸张尺寸 |
 | `pageSizeConf` | `"predefine"` | 预定义纸张 |
 | `printMode` | `"server"` | 打印模式 |
@@ -1378,8 +1415,8 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | `bbPlaceholder` | `True` | 占位符 |
 | `needFillByRow` | `False` | 按行填充 |
 | `fillBy` | `0` | 填充方式 |
-| `withPageSize` | `True` | 带纸张尺寸 |
-| `autoLineHeightType` | `"1"` | 自动行高类型 |
+| `fixedColWidthInNormal` | `False` | 普通视图固定列宽（缺失会导致配置不兼容） |
+| `withPageSize` | `False` | 带纸张尺寸 |
 
 ### scopeConfig type 字段
 - 三种值: `"string"` (input/datePicker/select/radiogroup 及对应 vant 控件), `"array"` (checkboxgroup/vantCheckboxgroup), `"object"` (nurseFormContext)
