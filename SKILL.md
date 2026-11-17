@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.12
+# Report Generator Skill - v8.13
 
 ## 使用流程
 
@@ -86,6 +86,7 @@ description: "智能护理表单模板生成器"
     - 背景：`{"name": "背景", "symbol": "bgColor", "value": {"dataType": "color", "data": "#ffffff"}, "cellRange": "cell"}`
     - 内容显隐：`{"name": "内容显隐", "symbol": "contentVisibility", "value": true}`
   - `expressionStatement` 为条件计算脚本，通过 `$$meta?.widget?.scopeField` 获取当前控件字段名，`$$scope[scopeField]` 获取值，`return { bgColor, contentVisibility }` 返回结果
+  - **所有签名控件必须带该条件属性**：`w_signature()` / `w_vant_signature()` 已内置，PC 与 PDA 均适用；`build_meta()` 会自动将其从 widget 移到 cell，最终只在 cell 层出现（与系统导出一致），`verify()` 会拦截缺失的签名控件
   - 典型场景：scopeField 值含 `/` 时视为图片路径，隐藏内容并将图片设为背景；否则正常显示文本
 
 ### 字典数据源类 H27（固定字典引用）
@@ -254,7 +255,7 @@ description: "智能护理表单模板生成器"
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.12
+护理表单报表生成器模板 v8.13
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
 所有硬性约束 H1-H39 由 helper 函数自动保障。
 """
@@ -632,6 +633,13 @@ def _rand_id(n=6):
     chars = string.ascii_letters + string.digits
     return ''.join(random.choices(chars, k=n))
 
+def is_signature_widget(widget):
+    """H25/H26: 判断是否为签名控件 (双击事件或名称关键词)"""
+    events = widget.get("componentLogic", {}).get("events", [])
+    dblclick_sig = any(e.get("type") == "dblclick.native" and "nenr_sheetFormItem" in e.get("handler", "")
+                       for e in events)
+    return dblclick_sig or any(k in (widget.get("name") or "") for k in SIGNATURE_NAME_KEYWORDS)
+
 def w_signature(scope_field, identifier, name, rowstart=1, rowend=1):
     """
     构建护士签名 input 控件 (H25: focus+dblclick 事件)
@@ -651,16 +659,18 @@ def w_signature(scope_field, identifier, name, rowstart=1, rowend=1):
              "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });"}
         ],
         "insertCell": {"rowstart": rowstart, "rowend": rowend, "scopeField": ""}
-    }, "scopeField": scope_field, "identifier": identifier, "name": name}
+    }, "scopeField": scope_field, "identifier": identifier, "name": name,
+        "conditionAttribute": condition_attribute()}
 
 def w_vant_signature(scope_field, identifier, name, rowstart=1, rowend=1):
-    """构建 PDA 签名控件 (H25: 仅 focus 事件)"""
+    """构建 PDA 签名控件 (H25: 仅 focus 事件, H26: 带条件属性)"""
     widget = w_vant_input(scope_field, identifier, name,
                           rowstart=rowstart, rowend=rowend)
     widget["componentLogic"]["events"] = [
         {"id": _rand_id(), "name": "获得焦点", "type": "focus",
          "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"}
     ]
+    widget["conditionAttribute"] = condition_attribute()
     return widget
 
 # --- 条件属性函数 (H26: 单元格条件显示) ---
@@ -752,7 +762,11 @@ def build_meta(source, merge_list, widgets, title_rows, header_rows, multiline_c
                 cell["s"] = w.get("s") or _style(ht=ht, tb=tb)
                 if "v" in w: cell["v"] = w["v"]
                 if "t" in w: cell["t"] = w["t"]
-                if "conditionAttribute" in w: cell["conditionAttribute"] = w["conditionAttribute"]
+                if "conditionAttribute" in w:
+                    cell["conditionAttribute"] = w["conditionAttribute"]
+                else:
+                    ca = w["widget"].pop("conditionAttribute", None)
+                    if ca: cell["conditionAttribute"] = ca
                 meta.append(cell)
             else:
                 val = source[r][c] if c < len(source[r]) else None
@@ -1001,8 +1015,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
                         for e in events)
         dblclick_sig = any(e.get("type") == "dblclick.native" and "nenr_sheetFormItem" in e.get("handler", "")
                            for e in events)
-        is_signature = dblclick_sig or any(
-            k in (widget.get("name") or "") for k in SIGNATURE_NAME_KEYWORDS)
+        is_signature = is_signature_widget(widget)
         if not is_signature:
             continue
         if not focus_sig:
@@ -1022,6 +1035,12 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
                     errors.append(f"H26: ({cell['row']},{cell['col']}) conditionAttribute 缺少 expressionStatement")
                 if "attributeActiveInfo" not in attr:
                     errors.append(f"H26: ({cell['row']},{cell['col']}) conditionAttribute 缺少 attributeActiveInfo")
+
+    # H26: 签名控件必须带条件属性 (背景图+内容显隐, 仅 cell 层)
+    cell_map = {(cell["row"], cell["col"]): cell for cell in meta}
+    for (r, c), w in widgets.items():
+        if is_signature_widget(w["widget"]) and not cell_map.get((r, c), {}).get("conditionAttribute"):
+            errors.append(f"H26: ({r},{c}) 签名控件缺少 conditionAttribute")
 
     # H29: identifier 必须可用于 JavaScript 点号属性访问
     for (r, c), w in widgets.items():
@@ -1407,8 +1426,8 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | PDA checkbox | `w_vant_checkbox()` | `direction` 控制方向，`max_val=1` 限制单选 (H34) |
 | PDA radio | `w_vant_radio()` | `direction`，可选 `allow_deselect`/`item_spacing` (H34) |
 | PDA select | `w_vant_select()` | `vantSelect` 本地选项 (H34) |
-| PC 护士签名 | `w_signature()` | `events` 含 focus+dblclick 弹出表单项 (H25) |
-| PDA 护士签名 | `w_vant_signature()` | `events` 仅含 focus (H25/H34) |
+| PC 护士签名 | `w_signature()` | `events` 含 focus+dblclick 弹出表单项；自带条件属性 (H25/H26) |
+| PDA 护士签名 | `w_vant_signature()` | `events` 仅含 focus；自带条件属性 (H25/H26/H34) |
 | 普通输入框 | `attach_focus_events()` | 自动加 focus；单选/复选、计算框、患者页眉、只读、医院名称排除 (H39) |
 | 行动态显隐 | `add_change_event()` + `row_visibility_handler()` | 配合 `rows_afterload_hidden()` 和 `EVENT_SCRIPTS` (H35) |
 | 条件属性 | `condition_attribute()` | 添加到 cell, `conditionAttribute` 背景图+内容显隐 (H26) |
