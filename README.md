@@ -17,3 +17,12 @@
 - 学习模板制作视频：[点击查看](https://bsoft.yunxuetang.cn/kng/#/video/preview/detail?kngId=51ef4280-d52c-48fd-bbbb-d9f88f0ad57b&previewType=2&status=4)
 - 本 Skill 仅用于提升制作效率，生成结果不代表可直接投入正式环境；正式使用前必须经过人工审核。
 - 手动制作模板仍是实施人员必须掌握的基本技能，AI 不能替代对模板规范的理解与判断，建议先学会手工制作再借助本 Skill 提效。
+
+## 推荐工具
+
+以下工具均可免费使用（有免费额度），适合配合本 Skill 生成和修改模板：
+
+- **Trae**
+- **WorkBuddy**
+- **百度搭子**
+- **豆包工作**
