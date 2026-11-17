@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.11
+# Report Generator Skill - v8.12
 
 ## 使用流程
 
@@ -14,10 +14,10 @@ description: "智能护理表单模板生成器"
 1. **解析源文件**（PDF/DOCX）→ 提取表单结构（行/列/控件/合并区域/患者字段）
 2. **填写表单定义** → 在代码模板的「表单定义区」填入解析结果
 3. **运行代码模板** → helper 函数自动构建 source/meta/merges/resized/widgets，保障所有硬性约束
-4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H38
+4. **自动验证** → 脚本末尾 `verify()` 函数检查 H1-H39
 5. **打包 ZIP** → 输出 `<cd>-1.0.1.zip`
 
-## 硬性约束（H1-H38，违反即报错或显示异常）
+## 硬性约束（H1-H39，违反即报错或显示异常）
 
 ### 结构类 H1-H8（数据格式）
 
@@ -73,6 +73,8 @@ description: "智能护理表单模板生成器"
 ### 交互类 H25-H26（固定配置）
 
 - **H25**: 需要弹出表单项的签名控件（如"护士签名"），必须在 `componentLogic.events` 中添加平台对应事件：
+  - **适用范围**：字段名含"签名"，或属于签署/评估人角色（`签名`、`评估人`、`评估者`、`填表人`、`填表者`、`接生者`、`审核者`、`执行者`）的控件，一律用 `w_signature()` / `w_vant_signature()` 构建，禁止用普通 `w_input()`
+  - 位于页眉数据框内的签署字段（如"评估人"）同样必须配置签名事件；H39 不会对其重复添加 focus
   - PC input 同时添加焦点事件 `{"id": "<random>", "name": "获得焦点", "type": "focus", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"}` 和双击事件 `{"id": "<random>", "name": "双击", "type": "dblclick.native", "handler": "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });"}`
   - PDA vantInput 只添加同一个焦点事件，不添加 `dblclick.native`
   - `id` 使用随机6位字符串（如 `"QBaY9r"`），每个事件的 id 不同
@@ -231,16 +233,30 @@ description: "智能护理表单模板生成器"
   - 本规则只校验本地选项（`dataSource.type = "1"`）；字典数据源（`type = "3"`）的选项由系统下发，不做重复校验
   - `verify()` 必须解析本地 `dataMaker` 并检查重复 `value`，发现重复直接报错并停止打包
 
+### 输入框焦点事件 H39
+
+- **H39**: 除例外控件外，所有输入框必须添加 focus（获得焦点）事件，`handler` 固定为 `$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });`
+  - 适用控件：PC `input`、PDA `vantInput`（含放在多行单元格中的输入框）；`select`/`datePicker` 不加
+  - 必须排除以下控件：
+    - 单选/复选：`radiogroup`、`checkboxgroup`、`vantRadiogroup`、`vantCheckboxgroup`
+    - 计算得分框：`w_calc_input()` 及任何含 `componentLogic.interaction` 的控件
+    - 患者基本信息（页眉数据框）：`scopeField` 以 `hz_` 开头；PC 还排除页眉行 `PATIENT_HEADER_ROWS`（默认 R0–R3），PDA 无页眉行，仅按 `hz_` 前缀排除
+    - 只读输入框：`attribute.readonly = true`
+    - 医院名称框：`scopeField` 为空字符串
+  - 已按 H25 配置签名事件的控件保持原样：`add_focus_event()` 检测到已有 focus 事件不会重复添加
+  - 生成时调用 `attach_focus_events(WIDGETS, focus_header_rows)`（PC 传 `PATIENT_HEADER_ROWS`，PDA 传 `()`）；`verify()` 在打包前逐控件校验
+  - 普通输入框只加 focus，不加 `dblclick.native`；双击事件仅签名控件使用
+
 ## 内置代码模板
 
-以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H38。
+以下模板是**完整可运行的 Python 脚本**。模型只需修改「表单定义区」，helper 函数自动保障 H1-H39。
 
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.11
+护理表单报表生成器模板 v8.12
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
-所有硬性约束 H1-H38 由 helper 函数自动保障。
+所有硬性约束 H1-H39 由 helper 函数自动保障。
 """
 import json, uuid, zipfile, io, copy, os, re, sys
 
@@ -503,6 +519,42 @@ def add_change_event(widget, handler):
     widget["componentLogic"].setdefault("events", []).append(event)
     return widget
 
+# --- 输入框焦点事件 (H39) ---
+
+FOCUS_HANDLER = "$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });"
+
+def add_focus_event(widget):
+    """H39: 给输入框添加 focus 事件；已有 focus 时不重复添加"""
+    events = widget.setdefault("componentLogic", {}).setdefault("events", [])
+    if any(e.get("type") == "focus" for e in events):
+        return widget
+    events.append({"id": _rand_id(), "name": "获得焦点",
+                   "type": "focus", "handler": FOCUS_HANDLER})
+    return widget
+
+def focus_event_required(widget, row, patient_header_rows=(0, 1, 2, 3)):
+    """H39: 判断控件是否必须带 focus 事件"""
+    if widget.get("type") not in ("input", "vantInput"):
+        return False
+    scope_field = widget.get("scopeField") or ""
+    if not scope_field or scope_field.startswith("hz_"):
+        return False
+    if row in patient_header_rows:
+        return False
+    if widget.get("attribute", {}).get("readonly"):
+        return False
+    if "interaction" in widget.get("componentLogic", {}):
+        return False
+    return True
+
+def attach_focus_events(widgets, patient_header_rows=(0, 1, 2, 3)):
+    """H39: 批量给符合条件的输入框添加 focus 事件"""
+    for (r, _c), item in widgets.items():
+        widget = item["widget"] if isinstance(item, dict) and "widget" in item else item
+        if focus_event_required(widget, r, patient_header_rows):
+            add_focus_event(widget)
+    return widgets
+
 def row_visibility_handler(rows, show_values):
     """生成单值控件的行显隐 change 脚本"""
     rows_json = json.dumps(list(rows), ensure_ascii=False)
@@ -570,6 +622,9 @@ def w_calc_select(scope_field, identifier, name, options, dependencies, calc_scr
     }, "scopeField": scope_field, "identifier": identifier, "name": name}
 
 # --- 签名控件函数 (H25: 弹出表单项事件) ---
+
+SIGNATURE_NAME_KEYWORDS = ("签名", "评估人", "评估者", "填表人", "填表者",
+                           "接生者", "审核者", "执行者")
 
 def _rand_id(n=6):
     """生成随机ID (字母+数字)"""
@@ -803,8 +858,9 @@ def build_report_data(form_cd, form_na, form_version, template_obj):
 
 # --- 验证函数 ---
 
-def verify(data, source, meta, merges, resized, widgets, patient_fields, platform="PC"):
-    """验证所有硬性约束 H1-H38；platform 默认 PC，保持旧调用兼容"""
+def verify(data, source, meta, merges, resized, widgets, patient_fields, platform="PC",
+           patient_header_rows=(0, 1, 2, 3)):
+    """验证所有硬性约束 H1-H39；platform 默认 PC，保持旧调用兼容"""
     errors = []
     template_obj = json.loads(data["template"])
 
@@ -937,22 +993,25 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
                 if "\r\n" not in code and "\n" in code:
                     errors.append(f"H24: ({r},{c}) action 脚本含 \\n 而非 \\r\\n")
 
-    # H25: 只校验真正调用 nenr_sheetFormItem 的签名事件
+    # H25: 只校验签名控件（H39 普通输入框也有 nenr_sheetFormItem focus，需区分）
     for (r, c), w in widgets.items():
         widget = w["widget"]
         events = widget.get("componentLogic", {}).get("events", [])
-        signature_events = [e for e in events
-                            if "nenr_sheetFormItem" in e.get("handler", "")]
-        if signature_events:
-            focus_found = any(e.get("type") == "focus" for e in signature_events)
-            dblclick_found = any(e.get("type") == "dblclick.native" for e in signature_events)
-            if not focus_found:
-                errors.append(f"H25: ({r},{c}) 签名事件缺少 focus")
-            if widget.get("type", "").startswith("vant"):
-                if dblclick_found:
-                    errors.append(f"H25: ({r},{c}) PDA 签名不得添加 dblclick.native")
-            elif not dblclick_found:
-                errors.append(f"H25: ({r},{c}) PC 签名缺少 dblclick.native 事件")
+        focus_sig = any(e.get("type") == "focus" and "nenr_sheetFormItem" in e.get("handler", "")
+                        for e in events)
+        dblclick_sig = any(e.get("type") == "dblclick.native" and "nenr_sheetFormItem" in e.get("handler", "")
+                           for e in events)
+        is_signature = dblclick_sig or any(
+            k in (widget.get("name") or "") for k in SIGNATURE_NAME_KEYWORDS)
+        if not is_signature:
+            continue
+        if not focus_sig:
+            errors.append(f"H25: ({r},{c}) 签名事件缺少 focus")
+        if widget.get("type", "").startswith("vant"):
+            if dblclick_sig:
+                errors.append(f"H25: ({r},{c}) PDA 签名不得添加 dblclick.native")
+        elif not dblclick_sig:
+            errors.append(f"H25: ({r},{c}) PC 签名缺少 dblclick.native 事件")
 
     # H26: conditionAttribute 结构检查
     for cell in meta:
@@ -1109,6 +1168,16 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
         if dup:
             errors.append(f"H38: ({r},{c}) 选项 value 重复 {dup}，勾选一项会同时选中所有同值选项")
 
+    # H39: 普通输入框必须带 focus 事件
+    for (r, c), w in widgets.items():
+        widget = w["widget"]
+        if not focus_event_required(widget, r, patient_header_rows):
+            continue
+        events = widget.get("componentLogic", {}).get("events", [])
+        if not any(e.get("type") == "focus" and "nenr_sheetFormItem" in e.get("handler", "")
+                   for e in events):
+            errors.append(f"H39: ({r},{c}) 输入框 {widget.get('scopeField')!r} 缺少 focus 事件")
+
     # 输出结果
     if errors:
         print("=== 验证失败 ===")
@@ -1116,7 +1185,7 @@ def verify(data, source, meta, merges, resized, widgets, patient_fields, platfor
             print(f"  [FAIL] {e}")
         sys.exit(1)
     else:
-        print("=== 验证通过: H1-H38 全部满足 ===")
+        print("=== 验证通过: H1-H39 全部满足 ===")
 
 # --- 打包函数 ---
 
@@ -1146,6 +1215,9 @@ OUTPUT_DIR = r"c:\Users\John\Documents\AweSun Files"
 
 # PC 患者信息字段 (H13: 总列数 = len × 2；PDA 不参与列数计算)
 PATIENT_FIELDS = []  # 如 ["床号","姓名","性别","年龄","住院号","入院诊断"]
+
+# 页眉行 (H39: 这些行的输入框不加 focus 事件)
+PATIENT_HEADER_ROWS = (0, 1, 2, 3)
 
 # source 行数据: 每行为 [str|null, ...] (H2)
 SOURCE_ROWS = []
@@ -1189,6 +1261,8 @@ if __name__ == "__main__":
     # 1. 构建各部分
     source = build_source(SOURCE_ROWS)
     merges = build_merges(MERGE_AREAS)
+    focus_header_rows = PATIENT_HEADER_ROWS if PLATFORM == "PC" else ()  # H39: PDA 无页眉行
+    attach_focus_events(WIDGETS, focus_header_rows)  # H39: 普通输入框加 focus
     meta = build_meta(source, MERGE_AREAS, WIDGETS, TITLE_ROWS, HEADER_ROWS,
                       MULTILINE_CELLS, PLATFORM)
     resized = build_resized(ROW_HEIGHTS, COL_WIDTHS)
@@ -1202,8 +1276,9 @@ if __name__ == "__main__":
     # 3. 构建顶层 JSON
     data = build_report_data(FORM_CD, FORM_NA, FORM_VERSION, template_obj)
 
-    # 4. 验证 H1-H38
-    verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS, PLATFORM)
+    # 4. 验证 H1-H39
+    verify(data, source, meta, merges, resized, WIDGETS, PATIENT_FIELDS, PLATFORM,
+           focus_header_rows)
 
     # 5. 打包 ZIP
     package(data, FORM_CD, FORM_VERSION, OUTPUT_DIR)
@@ -1334,6 +1409,7 @@ reportConfig:                         # H8 从催产素模板深拷贝
 | PDA select | `w_vant_select()` | `vantSelect` 本地选项 (H34) |
 | PC 护士签名 | `w_signature()` | `events` 含 focus+dblclick 弹出表单项 (H25) |
 | PDA 护士签名 | `w_vant_signature()` | `events` 仅含 focus (H25/H34) |
+| 普通输入框 | `attach_focus_events()` | 自动加 focus；单选/复选、计算框、患者页眉、只读、医院名称排除 (H39) |
 | 行动态显隐 | `add_change_event()` + `row_visibility_handler()` | 配合 `rows_afterload_hidden()` 和 `EVENT_SCRIPTS` (H35) |
 | 条件属性 | `condition_attribute()` | 添加到 cell, `conditionAttribute` 背景图+内容显隐 (H26) |
 
@@ -1529,6 +1605,17 @@ WIDGETS[(21, 7)] = {"widget": w_signature("common_tbz", "tbz01", "填表者")}
 `w_signature()` 自动在 `componentLogic.events` 中添加：
 - `focus` 事件：`$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo });`（单击触发）
 - `dblclick.native` 事件：`$$beeReportBridge('nenr_sheetFormItem', { ItemInfo: $$formItemInfo, triggerType:'2' });`（双击触发）
+
+### 普通输入框 focus 事件（H39）
+
+除签名控件外，普通输入框也需要 focus 事件；无需逐个手写，生成时统一调用：
+
+```python
+# 构建区已内置，一般无需手工调用
+attach_focus_events(WIDGETS, focus_header_rows)  # H39: PC 传 PATIENT_HEADER_ROWS，PDA 传 ()
+```
+
+自动排除：单选/复选、计算框（含 interaction 或 readonly）、`hz_` 患者字段、PC 页眉行 `PATIENT_HEADER_ROWS`、`scopeField` 为空的医院名称框，以及已有 focus 的签名控件。
 
 ### 条件属性模式（H26: 单元格背景图+内容显隐）
 
