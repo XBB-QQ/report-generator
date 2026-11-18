@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.14
+# Report Generator Skill - v8.15
 
 ## 使用流程
 
@@ -245,7 +245,7 @@ description: "智能护理表单模板生成器"
   - 必须排除以下控件：
     - 单选/复选：`radiogroup`、`checkboxgroup`、`vantRadiogroup`、`vantCheckboxgroup`
     - 计算得分框：`w_calc_input()` 及任何含 `componentLogic.interaction` 的控件
-    - 患者基本信息（页眉数据框）：`scopeField` 以 `hz_` 开头；PC 还排除页眉行 `PATIENT_HEADER_ROWS`（默认 R0–R3），PDA 无页眉行，仅按 `hz_` 前缀排除
+    - 患者基本信息（页眉数据框）：`scopeField` 以 `ym_` 开头；PC 还排除页眉行 `PATIENT_HEADER_ROWS`（默认 R0–R3），PDA 无页眉行，仅按 `ym_` 前缀排除
     - 只读输入框：`attribute.readonly = true`
     - 医院名称框：`scopeField` 为空字符串
   - 已按 H25 配置签名事件的控件保持原样：`add_focus_event()` 检测到已有 focus 事件不会重复添加
@@ -259,7 +259,7 @@ description: "智能护理表单模板生成器"
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.14
+护理表单报表生成器模板 v8.15
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
 所有硬性约束 H1-H39 由 helper 函数自动保障。
 """
@@ -542,7 +542,7 @@ def focus_event_required(widget, row, patient_header_rows=(0, 1, 2, 3)):
     if widget.get("type") not in ("input", "vantInput"):
         return False
     scope_field = widget.get("scopeField") or ""
-    if not scope_field or scope_field.startswith("hz_"):
+    if not scope_field or scope_field.startswith("ym_"):
         return False
     if row in patient_header_rows:
         return False
@@ -1524,10 +1524,13 @@ reportConfig:                         # H8 由 build_report_config() 生成（�
 - 仅当表单有需要自动填充的患者信息字段时才需要写 beforerender 脚本（无自动填充则留空）
 - 示例:
   ```javascript
+  $$scope.ym_jgmc = $$scope.nurseFormContext?.naOrg;
   $$scope.ym_xm = $$scope.nurseFormContext?.patientInfo?.name;
   $$scope.ym_xb = $$scope.nurseFormContext?.patientInfo?.sexName;
   $$scope.ym_nl = $$scope.nurseFormContext?.patientInfo?.age;
-  $$scope.ym_zyh = $$scope.nurseFormContext?.patientInfo?.admNo;
+  $$scope.ym_ks = $$scope.nurseFormContext?.patientInfo?.deptName;
+  $$scope.ym_ch = $$scope.nurseFormContext?.patientInfo?.bed;
+  $$scope.ym_zyh = $$scope.nurseFormContext?.patientInfo?.numVismed;
   ```
 
 ## 常见表单模式
@@ -1671,7 +1674,7 @@ WIDGETS[(21, 7)] = {"widget": w_signature("common_tbz", "tbz01", "填表者")}
 attach_focus_events(WIDGETS, focus_header_rows)  # H39: PC 传 PATIENT_HEADER_ROWS，PDA 传 ()
 ```
 
-自动排除：单选/复选、计算框（含 interaction 或 readonly）、`hz_` 患者字段、PC 页眉行 `PATIENT_HEADER_ROWS`、`scopeField` 为空的医院名称框，以及已有 focus 的签名控件。
+自动排除：单选/复选、计算框（含 interaction 或 readonly）、`ym_` 患者字段、PC 页眉行 `PATIENT_HEADER_ROWS`、`scopeField` 为空的医院名称框，以及已有 focus 的签名控件。
 
 ### 条件属性模式（H26: 单元格背景图+内容显隐）
 
