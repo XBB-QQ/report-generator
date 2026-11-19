@@ -3,7 +3,7 @@ name: "report-generator"
 description: "智能护理表单模板生成器"
 ---
 
-# Report Generator Skill - v8.15
+# Report Generator Skill - v8.16
 
 ## 使用流程
 
@@ -50,7 +50,7 @@ description: "智能护理表单模板生成器"
 - **H16**: 文本单元格必须包含 `v`（文本值）和 `t: 1`（类型标记）字段
 - **H17**: PC 表单列宽必须精确计算（允许小数如 `30.5`/`129.5`），总宽度接近 A4 可用宽度（~768px），不使用整数估算；PDA 按 H34
 - **H18**: 行高必须根据内容行数精确设置；空行（分隔行）高度必须为 `11.5px`（不是标准行高）
-- **H19**: 医疗机构名称必须添加 input widget（`scopeField` 可为空字符串 `""`）
+- **H19**: 医疗机构名称必须添加 input widget，`scopeField` 默认 `ym_jgmc`（自动填充 `naOrg`）；不需要自动填充时用空字符串 `""`
 - **H20**: PC 日期控件必须使用 `datePicker` 类型（有 `t:1, v:"占位文本"`），不使用 `datePickerQuick`；PDA 必须使用 `vantDateTimePicker`，按 H34
 - **H21**: 纯展示性 checkbox（如"已指导"标记）`scopeField` 必须为空字符串 `""`
 - **H22**: checkboxgroup 当选项 ≥ 3 个时应设置 `itemSpacing` 控制间距（PC 推荐 30，PDA 推荐 12）；radiogroup/vantRadiogroup 可按需设置 `itemSpacing` 和 `allowDeselect`
@@ -259,7 +259,7 @@ description: "智能护理表单模板生成器"
 ```python
 #!/usr/bin/env python3
 """
-护理表单报表生成器模板 v8.15
+护理表单报表生成器模板 v8.16
 使用方法：修改 === 表单定义 === 区块，运行即可生成 ZIP。
 所有硬性约束 H1-H39 由 helper 函数自动保障。
 """
@@ -1533,11 +1533,65 @@ reportConfig:                         # H8 由 build_report_config() 生成（�
   $$scope.ym_zyh = $$scope.nurseFormContext?.patientInfo?.numVismed;
   ```
 
+## nurseFormContext 字段映射（页眉自动填充）
+
+**规则：先按文档语义识别页眉需要哪些字段 → 在全量字段里查找对应路径 → 找不到的直接忽略（不赋值、不猜路径），该字段留空由人工填写。**
+
+### 全量字段（系统内置，实际取值以租户数据为准）
+
+| 路径 | 含义 | 示例值 |
+|------|------|--------|
+| `nurseFormContext.naOrg` | 医疗机构名称 | 创业慧康总医院 |
+| `nurseFormContext.idOrg` | 机构 ID | 610d4db624f65b5600f660f5 |
+| `nurseFormContext.idDept` | 科室 ID | 618a459464de2a643d16a279 |
+| `nurseFormContext.idTet` | 租户 ID | BSOFTYL |
+| `patientInfo.name` | 患者姓名 | CY_卞6630 |
+| `patientInfo.sex` / `sexName` | 性别代码 / 名称 | 1 / 男 |
+| `patientInfo.birthday` | 出生日期 | 1986-10-11 00:00:00 |
+| `patientInfo.age` / `inAge` | 年龄 / 入院年龄 | 40岁 / 38岁 |
+| `patientInfo.dept` / `deptName` / `cdDept` | 科室 ID / 名称 / 编码 | 616192fc... / 神经内科 / 100400 |
+| `patientInfo.ward` / `wardName` / `cdWard` | 病区 ID / 名称 / 编码 | 618a45... / 第17病区 / 201701 |
+| `patientInfo.bed` / `idBed` | 床号 | 3332 |
+| `patientInfo.numVismed` | 住院号 | A0001478 |
+| `patientInfo.cdVismed` / `idVismed` | 就诊号 / 就诊 ID | V00000010335 / 68b7a725... |
+| `patientInfo.inDate` / `inDay` | 入院日期 / 住院天数 | 2025-09-03 10:25:41 / 440 |
+| `patientInfo.diagnoses` | 诊断 | 特奈牙 |
+| `patientInfo.chiefPhyName` | 主管医生 | 杨益 |
+| `patientInfo.nursingLevelName` | 护理级别 | 一级护理 |
+| `patientInfo.bloodTypeName` | 血型 | A |
+| `patientInfo.nationName` / `marriageName` | 民族 / 婚姻 | 汉族 / 未婚 |
+| `patientInfo.patConditionName` | 病情 | 一般 |
+| `patientInfo.patientType` / `fgOutHos` | 患者类型 / 出院标志 | 2 / 0 |
+| `patientInfo.cdClin` / `idCard` / `pi` | 临床号 / 身份证号 / 主索引 | 0010010931 / 130101... / 725447... |
+| `patientInfo.otherInfos` | 其他信息（对象，常为空） | `{}` |
+| `docInfo.docName` / `docTypeName` | 文档名称 / 文档类型 | 产时记录（beer） / 护理评估 |
+| `docInfo.showInPda` / `batchSign` / `fgMews` | PDA 显示 / 批量签名 / MEWS | 1 / 1 / 1 |
+
+### 常用页眉字段映射（scopeField 命名固定）
+
+| 页眉字段 | 取数路径 | scopeField |
+|---------|---------|-----------|
+| 医疗机构名称 | `naOrg` | `ym_jgmc` |
+| 姓名 | `patientInfo.name` | `ym_xm` |
+| 性别 | `patientInfo.sexName` | `ym_xb` |
+| 年龄 | `patientInfo.age` | `ym_nl` |
+| 科室 | `patientInfo.deptName` | `ym_ks` |
+| 病区 | `patientInfo.wardName` | `ym_bq` |
+| 床号 | `patientInfo.bed` | `ym_ch` |
+| 住院号 | `patientInfo.numVismed` | `ym_zyh` |
+| 入院日期 | `patientInfo.inDate` | `ym_rq` |
+| 诊断 | `patientInfo.diagnoses` | `ym_zd` |
+| 护理级别 | `patientInfo.nursingLevelName` | `ym_hljb` |
+| 主管医生 | `patientInfo.chiefPhyName` | `ym_zgys` |
+
+- 同一路径只赋值一次；表单里没有的字段不要写进脚本
+- 所有 `ym_` 前缀字段按 H39 不加 focus 事件
+
 ## 常见表单模式
 
 ### R0 空行（H23）
 - 所有报表的 R0 都是空行，合并跨所有列
-- R0C0 可放 `{医疗机构名称}` 占位符文本 + input widget（`scopeField=""`）
+- R0C0 可放 `{医疗机构名称}` 占位符文本 + input widget（默认绑定 `scopeField="ym_jgmc"` 自动填充；不需要自动填充时用 `""`）
 - 也可全为 `null`（纯空行，无内容）
 - R0 行高通常 22px
 - 示例:
@@ -1545,7 +1599,7 @@ reportConfig:                         # H8 由 build_report_config() 生成（�
   # 方式1: 有医疗机构名称
   SOURCE_ROWS[0] = ["[医疗机构名称]"] + [None] * (n_cols - 1)
   MERGE_AREAS.append((0, 0, 0, n_cols - 1))
-  WIDGETS[(0, 0)] = {"widget": w_input("", "ry_jgmc", "医疗机构名称")}
+  WIDGETS[(0, 0)] = {"widget": w_input("ym_jgmc", "ry_jgmc", "医疗机构名称")}
 
   # 方式2: 纯空行
   SOURCE_ROWS[0] = [None] * n_cols
