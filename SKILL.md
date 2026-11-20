@@ -682,7 +682,7 @@ def w_vant_signature(scope_field, identifier, name, rowstart=1, rowend=1):
 _CONDITION_ATTR_SCRIPT = """let contentVisibility = true;\r
 let bgColor = {\r
     dataType: 'image',\r
-    data: { url: '', mode: 'auto' }\r
+    data: { url: '', mode: 'cover' }\r
 };\r
 const scopeField = $$meta?.widget?.scopeField;\r
 if (scopeField) {\r
